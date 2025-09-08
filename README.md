@@ -423,16 +423,4 @@ README'de referans verilen görüntüleri oluşturmak için:
 5. **screenshot_timing_config.png**: LED zamanlama konfigürasyonu
 6. **screenshot_statistics.png**: İstatistik sekmesi
 7. **screenshot_logs.png**: Log sekmesi
-
-### Görüntü Özellikleri
-- **Çözünürlük**: Minimum 1280x800
-- **Format**: PNG (şeffaf arka plan destekli)
-- **Kalite**: Yüksek çözünürlük (300 DPI önerili)
-- **Boyut**: Maksimum 2MB per görüntü
-
 ---
-
-**Geliştirici**: BLE Veri Toplama Sistemi v2.0  
-**Son Güncelleme**: Ocak 2024  
-**Teknik Seviye**: Endüstriyel/Profesyonel  
-**Platform Desteği**: Windows 10+, macOS 10.15+, Ubuntu 18.04+
