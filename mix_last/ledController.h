@@ -13,7 +13,7 @@ public:
     ledController();
 
     void begin();
-    void update();
+    void update(int itr);
     void pauseAllExcept(int activeIndex);
     void resumeAll();
     void handleTimerEvent(int timerIdx);

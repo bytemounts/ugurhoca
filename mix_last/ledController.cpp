@@ -70,13 +70,10 @@ void ledController::begin() {
   NRF_TIMER4->TASKS_STOP = 1;
 }
 
-void ledController::update() {
-  for (int i = 0; i < 5; i++) {
-    if (toggleFlag[i]) {
-      toggleFlag[i] = false;
-      digitalWrite(pinNos[i], !digitalRead(pinNos[i]));
-    }
-  }
+void ledController::update(int i) {
+  if (toggleFlag[i]) digitalWrite(pinNos[i], HIGH);
+  else digitalWrite(pinNos[i], LOW);
+  
 }
 
 void ledController::resumeAll() {
@@ -91,38 +88,38 @@ void ledController::handleTimerEvent(int timerIdx) {
   switch (timerIdx) {
     case 0:
       if (NRF_TIMER1->EVENTS_COMPARE[0]) {
-        Serial.print("cp5\n");
+        Serial.print("cp11\n");
         NRF_TIMER1->EVENTS_COMPARE[0] = 0; // Clear event
-        NRF_TIMER1->INTENCLR = TIMER_INTENCLR_COMPARE0_Msk;//kesmeyi kapatır, .ino'da timer_start_handle fonksiyonu tekrar açar.
-        toggleFlag[timerIdx]=true;
+        NRF_TIMER1->TASKS_CLEAR=1;//sayacı sıfırlar
+        toggleFlag[timerIdx]=false;
         dongu_led[timerIdx]=true;
       }
       break;
     case 1:
       if (NRF_TIMER2->EVENTS_COMPARE[0]) {
-        Serial.print("cp5\n");
+        Serial.print("cp12\n");
         NRF_TIMER2->EVENTS_COMPARE[0] = 0; // Clear event
-        NRF_TIMER2->INTENCLR = TIMER_INTENCLR_COMPARE0_Msk;
-        toggleFlag[timerIdx]=true;
+        NRF_TIMER2->TASKS_CLEAR=1;//sayacı sıfırlar
+        toggleFlag[timerIdx]=false;
         dongu_led[timerIdx]=true;
       }
       break;
     case 2:
       if (NRF_TIMER3->EVENTS_COMPARE[0]) {
-        Serial.print("cp5\n");
+        Serial.print("cp13\n");
         NRF_TIMER3->EVENTS_COMPARE[0] = 0; // Clear event
-        NRF_TIMER3->INTENCLR = TIMER_INTENCLR_COMPARE0_Msk;
-        toggleFlag[timerIdx]=true;
+        NRF_TIMER3->TASKS_CLEAR=1;//sayacı sıfırlar
+        toggleFlag[timerIdx]=false;
         dongu_led[timerIdx]=true;
         
       }
       break;
     case 3:
       if (NRF_TIMER4->EVENTS_COMPARE[0]) {
-        Serial.print("cp5\n");
+        Serial.print("cp14\n");
         NRF_TIMER4->EVENTS_COMPARE[0] = 0; // Clear event
-        NRF_TIMER4->INTENCLR = TIMER_INTENCLR_COMPARE0_Msk;
-        toggleFlag[timerIdx]=true;
+        NRF_TIMER4->TASKS_CLEAR=1;//sayacı sıfırlar
+        toggleFlag[timerIdx]=false;
         dongu_led[timerIdx]=true;
       }
       break;
