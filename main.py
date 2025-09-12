@@ -88,6 +88,7 @@ class BLEDataManager:
         self.recv_buffer = ""
         self.led_isolation_mode = False
         self.current_active_led = None  # Track currently active LED for isolation
+        self.system_state = True 
 
         # Initialize message sending variables (add this before setup_gui())
         self.message_entry = None
@@ -415,6 +416,38 @@ class BLEDataManager:
             self._log_message(f"Failed to send message: {e}")
             return False
 
+    async def send_state_update(self, state: bool):
+        """Send system state update to nRF52840"""
+        if not self.client or not self.is_connected:
+            raise Exception("Device not connected")
+        
+        try:
+            state_data = {
+                "state": state,
+            }
+            
+            config_json = json.dumps(state_data, separators=(',', ':'))
+            config_message = config_json + '\n'
+            config_bytes = config_message.encode('utf-8')
+            
+            # send in chunks
+            max_chunk_size = 20
+            for i in range(0, len(config_bytes), max_chunk_size):
+                chunk = config_bytes[i:i + max_chunk_size]
+                await self.client.write_gatt_char(NUS_RX, chunk)
+                await asyncio.sleep(0.02)
+
+            # End marker
+            await self.client.write_gatt_char(NUS_RX, b'\n')
+            await asyncio.sleep(0.05)
+            
+            self._log_message(f"System state sent: {'ON' if state else 'OFF'}")
+            return True
+            
+        except Exception as e:
+            self._log_message(f"Failed to send state: {e}")
+            return False
+
     def clear_data(self):
         """Clear all stored data"""
         with self.data_lock:
@@ -432,7 +465,6 @@ class BLEDataManager:
             self._log_message(f"LED isolation enabled: Only LED {led_pin} data will be processed")
         else:
             self._log_message("LED isolation disabled: All LED data will be processed")
-
 
 class BLEDataAcquisitionGUI:
     """Professional GUI for BLE Data Acquisition - Optimized for Real-time Performance"""
@@ -610,6 +642,10 @@ class BLEDataAcquisitionGUI:
         self.clear_btn = tk.Button(control_frame, text="CLEAR", bg='#e67e22', fg='white',
                                  command=self.clear_data, **button_style)
         self.clear_btn.pack(side=tk.LEFT, padx=5)
+
+        self.state_btn = tk.Button(control_frame, text="STATE ON", bg='#1abc9c', fg='white',
+                             command=self.toggle_state, state=tk.DISABLED, **button_style)
+        self.state_btn.pack(side=tk.LEFT, padx=5)
         
         # Device selection
         ttk.Label(control_frame, text="Device:", font=('Arial', 10), background='#ecf0f1').pack(side=tk.RIGHT, padx=(10, 5), pady=15)
@@ -1506,6 +1542,41 @@ class BLEDataAcquisitionGUI:
         
         return self.lines.values()
     
+    def toggle_state(self):
+        """Toggle system state and send to device"""
+        # inverse state locally
+        self.ble_manager.system_state = not self.ble_manager.system_state
+        new_state = self.ble_manager.system_state
+
+        # Update button UI
+        if new_state:
+            self.state_btn.config(text="STATE ON", bg='#1abc9c')
+        else:
+            self.state_btn.config(text="STATE OFF", bg='#e74c3c')
+        
+        # Log local
+        self.on_message(f"System state changed to: {'ON' if new_state else 'OFF'}")
+
+        # Send to device
+        def on_state_send_complete(future):
+            try:
+                success = future.result()
+                if success:
+                    self.on_message(f"✓ State {'ON' if new_state else 'OFF'} sent to nRF52840")
+                else:
+                    self.on_message(f"✗ Failed to send state to nRF52840")
+                    # Comeback to previous state
+                    self.ble_manager.system_state = not new_state
+                    if not new_state:
+                        self.state_btn.config(text="STATE ON", bg='#1abc9c')
+                    else:
+                        self.state_btn.config(text="STATE OFF", bg='#e74c3c')
+            except Exception as e:
+                self.on_message(f"✗ State send error: {e}")
+        
+        future = self.run_async(self.ble_manager.send_state_update(new_state))
+        future.add_done_callback(on_state_send_complete)
+
     def update_connection_ui(self):
         """Update UI when connection state changes"""
         if self.ble_manager.is_connected:
@@ -1516,6 +1587,7 @@ class BLEDataAcquisitionGUI:
             self.connection_var.set("Connected")
             self.connection_label.configure(foreground="#27ae60")
             self.send_status_var.set("Ready to send messages")
+            self.state_btn.configure(state=tk.NORMAL)
         else:
             self.connect_btn.configure(state=tk.NORMAL)
             self.disconnect_btn.configure(state=tk.DISABLED)
@@ -1526,6 +1598,8 @@ class BLEDataAcquisitionGUI:
             self.connection_label.configure(foreground="#e74c3c")
             self.send_status_var.set("Device must be connected to send messages")
             self.is_recording = False
+            self.state_btn.configure(state=tk.DISABLED) 
+            self.state_btn.config(text="STATE OFF", bg='#95a5a6')
     
     def on_data_received(self, sensor_data: SensorData):
         """Handle new sensor data"""
@@ -1709,30 +1783,30 @@ class BLEDataAcquisitionGUI:
             "sequences": []
         }
             
-        # SOLUTION : Collecter seulement les timings uniques
+        # collect unique timing sequences
         unique_sequences = {}
         
-        # Parcourir tous les capteurs mais créer des clés uniques
+        #track unique (pin, time_open, time_delay, time_read, enabled) combinations
         for sensor_id, config in self.sensor_configs.items():
             for timing in config.timing_entries:
-                if timing.enabled:
-                    # Créer une clé unique basée sur les paramètres du timing
-                    timing_key = (timing.pin, timing.time_open_ms, 
-                                timing.time_delay_ms, timing.time_read_ms)
-                    
-                    # N'ajouter que si cette combinaison n'existe pas déjà
-                    if timing_key not in unique_sequences:
-                        # MODIFICATION: Format Arduino avec "led_pin" au lieu de "pin"
-                        sequence = {
-                            "led_pin": timing.pin,           # Utilise "led_pin" comme dans Arduino
-                            "time_open_ms": timing.time_open_ms,
-                            "time_delay_ms": timing.time_delay_ms,
-                            "time_read_ms": timing.time_read_ms,
-                            "enabled": timing.enabled
-                        }
-                        unique_sequences[timing_key] = sequence
+                
+                # create a unique key for the timing entry
+                timing_key = (timing.pin, timing.time_open_ms, 
+                            timing.time_delay_ms, timing.time_read_ms, timing.enabled)
+
+                # Only add if this combination doesn't already exist
+                if timing_key not in unique_sequences:
+                    # Create arduino-style keys
+                    sequence = {
+                        "led_pin": timing.pin,           # use 'pin' as 'led_pin'
+                        "time_open_ms": timing.time_open_ms,
+                        "time_delay_ms": timing.time_delay_ms,
+                        "time_read_ms": timing.time_read_ms,
+                        "enabled": timing.enabled
+                    }
+                    unique_sequences[timing_key] = sequence
         
-        # Convertir en liste
+        # Convert to list
         config_data["sequences"] = list(unique_sequences.values())
         
         # Sort sequences by led_pin for consistency
@@ -1742,11 +1816,12 @@ class BLEDataAcquisitionGUI:
         )
         
         total_sequences = len(config_data["sequences"])
-        unique_leds = len(set(seq["led_pin"] for seq in config_data["sequences"]))
-        
+        enabled_sequences = len([seq for seq in config_data["sequences"] if seq["enabled"]])
+        unique_leds = len(set(seq["led_pin"] for seq in config_data["sequences"] if seq["enabled"]))
+
         self.on_message(f"Sending timing config:")
-        self.on_message(f"  • {unique_leds} unique LEDs configured")
-        self.on_message(f"  • {total_sequences} unique sequences (no duplicates)")
+        self.on_message(f"  • {unique_leds} active LEDs")
+        self.on_message(f"  • {enabled_sequences} / {total_sequences} enabled sequences")
 
         # Send to device
         def on_send_complete(future):
