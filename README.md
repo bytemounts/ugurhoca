@@ -31,7 +31,7 @@ Yukarıdaki ekran görüntüsü, sistemin ana bileşenlerini göstermektedir:
 5. **Alt Durum Çubuğu**: Bağlantı durumu ve sistem mesajları
 
 ### Kanal Kontrol Sistemi
-<img width="200" height="795" alt="image" src="https://github.com/user-attachments/assets/266d04bd-1a23-433b-a35f-d968a1619aac" />
+<img width="200" height="795" alt="image" src="https://github.com/user-attachments/assets/266d04bd-1a23-433b-a35f-d968a1619aac" /> <img width="203" height="961" alt="image" src="https://github.com/user-attachments/assets/efbb1444-b414-440a-aad1-9792347e1b7f" />
 
 
 Sağ paneldeki kanal kontrolleri şunları sağlar:
@@ -128,7 +128,7 @@ Her kanal farklı renk koduna sahiptir:
 ## LED Zamanlama Konfigürasyonu
 
 
-<img width="995" height="778" alt="image" src="https://github.com/user-attachments/assets/da1492a1-38fb-4d7a-a565-efc0c21be1a2" /> <img width="203" height="961" alt="image" src="https://github.com/user-attachments/assets/efbb1444-b414-440a-aad1-9792347e1b7f" />
+<img width="995" height="778" alt="image" src="https://github.com/user-attachments/assets/da1492a1-38fb-4d7a-a565-efc0c21be1a2" /> 
 
 
 **TIMING** butonu ile erişilen  konfigürasyon paneli:
