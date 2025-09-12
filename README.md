@@ -165,6 +165,153 @@ Sensor Distribution:
   • Sensor 1: 1 sequence(s)
 ```
 
+### 5. State Butonu
+
+
+<img width="132" height="62" alt="image" src="https://github.com/user-attachments/assets/1d6d4e5e-401e-4449-a265-833c348f6863" /> <img width="125" height="53" alt="image" src="https://github.com/user-attachments/assets/8499d32c-b864-4db6-a2b7-0402f162d186" />
+
+
+### Genel Bakış
+
+**STATE** (Durum) butonu, **nRF52840** sisteminin genel durumunu **BLE Veri Toplama Sistemi** grafik arayüzünden kontrol etmenizi sağlar. Bu buton, sistemi uzaktan etkinleştirme veya devre dışı bırakma için doğrudan bir kontrol sunar.
+
+### Özellikler
+
+#### Buton Durumları
+
+  - **STATE ON** (Açık) (Yeşil `#1abc9c`): Sistem etkin.
+  - **STATE OFF** (Kapalı) (Kırmızı `#e74c3c`): Sistem devre dışı.
+  - **Devre Dışı** (Gri `#95a5a6`): Bluetooth bağlantısı yok.
+
+#### Davranış
+
+**Bluetooth Bağlantısı Kurulduğunda:**
+
+  - Buton otomatik olarak etkinleşir.
+  - Varsayılan durum **ON**'dur (etkin).
+  - nRF52840 sistemi, başlangıç durumunu anında alır.
+
+**Durum Değiştirme:**
+
+  - Tek tıklama: Sistem durumunu değiştirir (**ON** ↔ **OFF**).
+  - Görsel değişiklik: Butonun rengi ve metni anında güncellenir.
+  - Otomatik iletim: Durum, Bluetooth üzerinden nRF52840'a gönderilir.
+
+**Bağlantı Kesildiğinde:**
+
+  - Buton devre dışı kalır (grileşir).
+  - Durum, bir sonraki bağlantı için bellekte saklanır.
+
+### İletişim Formatı
+
+nRF52840'a gönderilen **JSON** mesajları:
+
+  - **Sistem etkin:**
+    ```json
+    {
+      "state": true
+    }
+    ```
+  - **Sistem devre dışı:**
+    ```json
+    {
+      "state": false
+    }
+    ```
+
+#### İletim Protokolü
+
+  - **Taşıyıcı:** BLE UART Hizmeti (NUS).
+  - **Kodlama:** UTF-8.
+  - **Sonlandırma:** Yeni satır karakteri (`\n`).
+  - **Parçalama:** Uzun mesajlar 20 baytlık parçalara bölünür.
+  - **Onay:** Kullanıcı arayüzündeki kayıtlar (loglar) aracılığıyla.
+
+### Kullanıcı Arayüzü
+
+#### Konum
+
+**STATE** butonu, ana kontrol çubuğunda, **CLEAR** (Temizle) butonundan sonra yer alır.
+
+#### Görsel Göstergeler
+
+  - **Yeşil renk:** **ON** durumu - Sistem çalışıyor.
+  - **Kırmızı renk:** **OFF** durumu - Sistem duraklatıldı.
+  - **Gri renk:** Buton devre dışı - Bağlantı yok.
+
+#### Kayıt Mesajları (Log Mesajları)
+
+  - `System state changed to: ON/OFF` - Yerel değişiklik.
+  - `✓ State ON/OFF sent to nRF52840` - Başarılı iletim.
+  - `✗ Failed to send state to nRF52840` - İletim hatası.
+  - `✗ State send error: [details]` - Teknik hata.
+
+### Pratik Kullanım
+
+#### Tipik Kullanım Durumları
+
+  - **Sistemi duraklatma:** Bağlantıyı kesmeden ölçümleri geçici olarak durdurma.
+  - **Bakım modu:** Bakım veya kalibrasyon için LED'leri durdurma.
+  - **Enerji tasarrufu:** nRF52840'ın tüketimini azaltma.
+  - **Deneysel kontrol:** Deneylerin başlangıç/bitişini senkronize etme.
+
+#### Önerilen İş Akışı
+
+1.  Bluetooth üzerinden nRF52840'a bağlanın.
+2.  Sistem otomatik olarak **ON** durumunda başlar.
+3.  İhtiyaçlara göre veri alımını kontrol etmek için **STATE** butonunu kullanın.
+4.  Durum değiştirildiğinde, devam eden veriler korunur.
+5.  Bağlantı kesildiğinde buton otomatik olarak devre dışı kalır.
+
+### Hata Yönetimi
+
+#### İletim Hataları
+
+  - Gönderim başarısız olursa, yerel durum geri yüklenir.
+  - Kayıtlarda bir hata mesajı görünür.
+  - Arayüz, sistemin gerçek durumuyla tutarlı kalır.
+
+#### Bağlantı Kaybı
+
+  - Buton otomatik olarak devre dışı kalır.
+  - Durum, yeniden bağlantı için saklanır.
+  - Kullanıcıdan herhangi bir işlem gerekmez.
+
+### Sistem Entegrasyonu
+
+#### Bağımlılıklar
+
+  - nRF52840 ile aktif Bluetooth bağlantısı.
+  - Çalışır durumda olan NUS (Nordic UART Service) hizmeti.
+  - BLE Veri Toplama Sistemi v2.0 arayüzü.
+
+#### Uyumluluk
+
+  - Tüm LED zamanlama modlarıyla uyumludur.
+  - Devam eden veri alımına müdahale etmez.
+  - Sensör yapılandırmalarından bağımsız çalışır.
+
+### Teknik Notlar
+
+#### Performans
+
+  - İletim neredeyse anlıktır (\< 100ms).
+  - Gerçek zamanlı veri alımı üzerinde hiçbir etkisi yoktur.
+  - Bluetooth iletişimlerinin eş zamansız (asenkron) yönetimi.
+
+#### Güvenlik
+
+  - Göndermeden önce bağlantı kontrolü.
+  - İletim zaman aşımlarının yönetimi.
+  - Başarısızlık durumunda otomatik geri yükleme.
+
+#### Ölçeklenebilirlik
+
+  - Gelecekteki özellikler için genişletilebilir JSON yapısı.
+  - Daha karmaşık durumlara uygun mimari.
+  - Gelişmiş sistem komutlarına hazır arayüz.
+
+
 ## Veri Formatları
 
 ### CSV Dışa Aktarım
