@@ -31,7 +31,8 @@ Yukarıdaki ekran görüntüsü, sistemin ana bileşenlerini göstermektedir:
 5. **Alt Durum Çubuğu**: Bağlantı durumu ve sistem mesajları
 
 ### Kanal Kontrol Sistemi
-<img width="200" height="795" alt="image" src="https://github.com/user-attachments/assets/266d04bd-1a23-433b-a35f-d968a1619aac" /> <img width="203" height="961" alt="image" src="https://github.com/user-attachments/assets/efbb1444-b414-440a-aad1-9792347e1b7f" />
+<img width="200" height="795" alt="image" src="https://github.com/user-attachments/assets/266d04bd-1a23-433b-a35f-d968a1619aac" /> <img width="203" height="773" alt="Screenshot 2025-09-12 173051" src="https://github.com/user-attachments/assets/02f49cc2-6820-40c4-b9e5-68d5080c5eac" />
+
 
 
 Sağ paneldeki kanal kontrolleri şunları sağlar:
