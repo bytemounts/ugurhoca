@@ -94,8 +94,8 @@ python ble_data_acquisition.py
 
 ### 2. Cihaz Bağlantısı
 
-![Cihaz Bağlantısı](<img width="269" height="94" alt="image" src="https://github.com/user-attachments/assets/85a71746-9c9d-4f96-95bf-0b465e49ab88" />
-)
+<img width="269" height="94" alt="image" src="https://github.com/user-attachments/assets/85a71746-9c9d-4f96-95bf-0b465e49ab88" />
+
 
 1. **SCAN** butonuna tıklayın (mor renk)
 2. Uyumlu cihazları açılan listeden seçin
