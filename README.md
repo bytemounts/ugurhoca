@@ -94,7 +94,7 @@ python ble_data_acquisition.py
 
 ### 2. Cihaz Bağlantısı
 
-<img width="269" height="94" alt="image" src="https://github.com/user-attachments/assets/85a71746-9c9d-4f96-95bf-0b465e49ab88" />
+<img width="395" height="91" alt="image" src="https://github.com/user-attachments/assets/3f931e3c-d812-4bbe-a733-c13ab5a30617" />
 
 
 1. **SCAN** butonuna tıklayın (mor renk)
@@ -103,6 +103,9 @@ python ble_data_acquisition.py
 4. Bağlantı durumu sağ alt köşede "Connected" olarak görüntülenir
 
 ### 3. Veri Toplama
+
+<img width="505" height="80" alt="image" src="https://github.com/user-attachments/assets/16e61be0-af23-46d8-bde2-8277101e1492" />
+
 
 1. **START** butonu (yeşil) ile kayıt başlatın
 2. Gerçek zamanlı grafik güncellenir
