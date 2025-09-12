@@ -127,7 +127,9 @@ Her kanal farklı renk koduna sahiptir:
 
 ## LED Zamanlama Konfigürasyonu
 
-<img width="995" height="778" alt="image" src="https://github.com/user-attachments/assets/da1492a1-38fb-4d7a-a565-efc0c21be1a2" />
+
+<img width="995" height="778" alt="image" src="https://github.com/user-attachments/assets/da1492a1-38fb-4d7a-a565-efc0c21be1a2" /> <img width="203" height="961" alt="image" src="https://github.com/user-attachments/assets/efbb1444-b414-440a-aad1-9792347e1b7f" />
+
 
 **TIMING** butonu ile erişilen  konfigürasyon paneli:
 
