@@ -1,6 +1,7 @@
 # BLE Veri Toplama Sistemi v2.0 - NRF52840 Express
 
-<img width="1391" height="801" alt="image" src="https://github.com/user-attachments/assets/08a88a12-9573-4e74-b2b3-58813221b0ca" />
+ src="<img width="1915" height="984" alt="image" src="https://github.com/user-attachments/assets/2ae05333-3ad2-461b-adcb-9760e6492c52" />
+" />
 
 *Gerçek zamanlı veri görselleştirmesi ve 4 kanal kontrol paneli*
 
