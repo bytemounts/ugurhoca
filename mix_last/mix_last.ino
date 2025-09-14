@@ -6,6 +6,104 @@
 #include <InternalFileSystem.h>
 #include <ArduinoJson.h>
 
+#include <Arduino.h>
+#include "nrfx_timer.h"
+/*
+#define LED_OFF_TIMER_INST  NRFX_TIMER_INSTANCE(0)
+#define DELAY_TIMER_INST    NRFX_TIMER_INSTANCE(1)
+#define READ_TIMER_INST     NRFX_TIMER_INSTANCE(2)
+
+extern "C" void nrfx_timer_0_irq_handler(void) { nrfx_timer_irq_handler(&LED_OFF_TIMER_INST); }
+extern "C" void nrfx_timer_1_irq_handler(void) { nrfx_timer_irq_handler(&DELAY_TIMER_INST); }
+extern "C" void nrfx_timer_2_irq_handler(void) { nrfx_timer_irq_handler(&READ_TIMER_INST); }
+
+void ledOffHandler(nrf_timer_event_t event_type, void* p_context) {
+  if (event_type == NRF_TIMER_EVENT_COMPARE0) {
+    int pin = (int)(intptr_t)p_context;
+    digitalWrite(pin, LOW);
+  }
+}
+
+void delayHandler(nrf_timer_event_t event_type, void* p_context) {
+  if (event_type == NRF_TIMER_EVENT_COMPARE0) {
+    int seq_id = (int)(intptr_t)p_context;
+
+    // ADC okuma başlasın
+    reading = true;
+    adcSum = 0;
+    adcCount = 0;
+
+    // READ timer başlat
+    nrfx_timer_clear(&READ_TIMER_INST);
+    nrfx_timer_extended_compare(
+      &READ_TIMER_INST,
+      NRF_TIMER_CC_CHANNEL0,
+      nrfx_timer_ms_to_ticks(&READ_TIMER_INST, sequences[seq_id].time_read_ms),
+      NRF_TIMER_SHORT_COMPARE0_STOP_MASK,
+      true
+    );
+    nrfx_timer_enable(&READ_TIMER_INST);
+  }
+}
+
+void readHandler(nrf_timer_event_t event_type, void* p_context) {
+  if (event_type == NRF_TIMER_EVENT_COMPARE0) {
+    int seq_id = currentSeq;
+    reading = false;
+
+    float avg = (adcCount > 0) ? (float)adcSum / adcCount : 0;
+    Serial.print("SEQ=");
+    Serial.print(seq_id);
+    Serial.print(" LED=");
+    Serial.print(sequences[seq_id].led_pin);
+    Serial.print(" AVG=");
+    Serial.println(avg);
+
+    // Sonraki sequence
+    currentSeq++;
+    if (currentSeq < seqCount && sequences[currentSeq].enabled) {
+      startSequence(currentSeq);
+    } else {
+      Serial.println("Tüm sekanslar bitti.");
+    }
+  }
+}
+
+void startSequence(int id) {
+  Sequence &seq = sequences[id];
+
+  // LED aç
+  digitalWrite(seq.led_pin, HIGH);
+
+  // LED off timer ayarla
+  nrfx_timer_clear(&LED_OFF_TIMER_INST);
+  nrfx_timer_extended_compare(
+    &LED_OFF_TIMER_INST,
+    NRF_TIMER_CC_CHANNEL0,
+    nrfx_timer_ms_to_ticks(&LED_OFF_TIMER_INST, seq.time_open_ms),
+    NRF_TIMER_SHORT_COMPARE0_STOP_MASK,
+    true
+  );
+  nrfx_timer_enable(&LED_OFF_TIMER_INST);
+
+  // Delay timer ayarla
+  nrfx_timer_clear(&DELAY_TIMER_INST);
+  nrfx_timer_extended_compare(
+    &DELAY_TIMER_INST,
+    NRF_TIMER_CC_CHANNEL0,
+    nrfx_timer_ms_to_ticks(&DELAY_TIMER_INST, seq.time_delay_ms),
+    NRF_TIMER_SHORT_COMPARE0_STOP_MASK,
+    true
+  );
+  nrfx_timer_enable(&DELAY_TIMER_INST);
+}
+
+
+
+
+
+
+*/
 // BLE Service
 BLEDfu  bledfu;  // OTA DFU service
 BLEDis  bledis;  // device information
@@ -40,10 +138,22 @@ bool starter_controller=false;
 
 String rxBuffer = "";           // Gelen parçaları biriktirir
 String gonderilecek_json="";
+void ble_check(){
+      //myleds.update(itr);
+    digitalWrite(22,LOW);
+    
+    if(callback){
+      rxBuffer.trim();
+      Serial.print(rxBuffer);
+      parseJsonBuffer(rxBuffer);
+      rxBuffer="";
+      callback=false;
+    }
+
+}
 void setup() {
   Serial.begin(9600);
   while(!Serial); // bazı nRF kartlarda gerekli
-  printResetReason();
   Serial.println("Program basladi");
 
   Serial.println("Bluefruit52 BLEUART JSON sender");//checkpoint 1
@@ -63,7 +173,7 @@ void setup() {
   blebas.begin();
   blebas.write(100);
   startAdv();
-
+  timer1_init();
   myleds.begin();
   mysistem.myAds.begin();
 }
@@ -74,81 +184,90 @@ void loop() {
   }
 
   if (Bluefruit.connected()) {
-    myleds.update(itr);
-    digitalWrite(22,LOW);
-    if(callback){
-      rxBuffer.trim();
-      Serial.print(rxBuffer);
-      parseJsonBuffer(rxBuffer);
-      rxBuffer="";
-      Serial.print("cp  7");
-      callback=false;
-    }
+    ble_check();
 
-
-    if(mysistem.state && mysistem.myAds.read_state[itr]){
-      //itr ile döngüyü kontrol et 3 bool tipi ile kontrolü sağla 
+    // Ana değişiklik: mysistem.state kontrolü ve read_state[itr] kontrolü
+    if(mysistem.state) {
+      
+      // Eğer bu kanal aktif değilse bir sonraki kanala geç
+      if(!mysistem.myAds.read_state[itr]) {
+        // Bu kanalı atla ve bir sonrakine geç
+        if(itr == 3) itr = 0;
+        else itr++;
+        return; // Bu döngüyü bitir, bir sonraki loop() çağrısında devam et
+      }
+      
+      // Bu noktada hem mysistem.state true hem de read_state[itr] true
       if(!dongu_led[itr] && !dongu_delay[itr] && !dongu_read_finish[itr] && !starter_controller){
         //en başta buraya girer ve başlangıç ayarları yapılır.
-        starter_controller =true;
-        myleds.toggleFlag[itr]=true;
-        prev=millis();
-        timer_start_handle(itr);
-        Serial.print("cp1 ");
-        adc_read_counter =0;
-        adc_toplayici=0;
-      }
+        starter_controller = true;
 
-      if(dongu_delay[itr] && !dongu_read_finish[itr]){
-        //delay işlemi bittiyse içeri girer ve her bir loopta okuma yapar.
-        
-        
-        if(millis()- baslangiczamani < mysistem.myAds.adc_readtime[itr]){//readtime kadar okur
-          adc_toplayici += mysistem.myAds.ads.readADC_SingleEnded(itr);//adc okuma kısmı
-          adc_read_counter++;
-        }else {
-          dongu_read_finish[itr]=true;
-          mysistem.myAds.adc[itr]=adc_toplayici/adc_read_counter;
-          gonderilecek_json = makeJsonPayload(mysistem.myAds.adc);
-          sendJsonPayload(gonderilecek_json);
-          Serial.print(gonderilecek_json);
-          Serial.print(itr);
-        }
+        NRF_TIMER1->CC[0] = (uint32_t)myleds.leds[itr].kalansure * 1000;// ms -> µs çevir
+        NRF_TIMER1->TASKS_START = 1;
+        digitalWrite(itr+4,HIGH);
+
+        prev = millis();
+        adc_read_counter = 0;
+        adc_toplayici = 0;
+        Serial.print("Starting channel: ");
+        Serial.println(itr);
       }
-      else{//dongu delay süreci
+      
+      if(!dongu_delay[itr]){
         if(millis()-prev > mysistem.myAds.adc_delay[itr]){
           //delay süresi bittiyse dongu_delay[itr] true yap. ve okuma işlemi başlayabilir.
-          dongu_delay[itr]=true;
+          dongu_delay[itr] = true;
           baslangiczamani = millis();
+          Serial.print("Delay finished for channel: ");
+          Serial.println(itr);
         }
       }
+      else{
+        if(!dongu_read_finish[itr]){
+          if(millis()- baslangiczamani < mysistem.myAds.adc_readtime[itr]){//readtime kadar okur
+            adc_toplayici += mysistem.myAds.ads.readADC_SingleEnded(itr);//adc okuma kısmı
+            adc_read_counter++;
+          }else {
+            if (adc_read_counter > 0) {
+              mysistem.myAds.adc[itr] = adc_toplayici / adc_read_counter;
+            } else {
+              mysistem.myAds.adc[itr] = 0;
+              Serial.print("Warning: adc_read_counter == 0 for channel ");
+              Serial.println(itr);
+            }
+            dongu_read_finish[itr] = true;
+            gonderilecek_json = makeJsonPayload(mysistem.myAds.adc);
+            sendJsonPayload(gonderilecek_json);
+            Serial.print("ADC reading finished for channel: ");
+            Serial.print(itr);
+            Serial.print(" - ");
+            Serial.println(gonderilecek_json);
+          }
+        }
+      }
+
+      // Kanal işlemi tamamlandıysa bir sonraki kanala geç
       if(dongu_led[itr] && dongu_delay[itr] && dongu_read_finish[itr]){
-        dongu_led[itr]=false;
-        dongu_delay[itr]=false;
-        dongu_read_finish[itr]=false;
-        starter_controller=false;
-        timer_stop_handle(itr);//timer sıfırla, timer durdur
-        if(itr == 3)itr=0;
+        dongu_led[itr] = false;
+        dongu_delay[itr] = false;
+        dongu_read_finish[itr] = false;
+        starter_controller = false;
+        
+        Serial.print("Channel ");
+        Serial.print(itr);
+        Serial.println(" completed, moving to next");
+        
+        if(itr == 3) itr = 0;
         else itr++;
-        Serial.print("cp4");//debug
       }
     }
-    
-
-    
-    
-  }else{
+  }
+  else{
     //ble bağlantısı yoksa
     if(mysistem.myAds.is_adc_started){
-      //bluetooth bağlantısı gerçekleşmemiştir bunun anlaşılabilir olması için ve adc ile kart arassında I2C haberleşmesinin başladığını kabul ederek
-      //adc led debugging metodu ile karışmaması için LED sürekli yanar eğer bluetooth bağlantısı yoksa.
       digitalWrite(LED_BUILTIN,HIGH);
     }
-    
   }
-  if(digitalRead(itr+4) == HIGH)dongu_led[itr]=true;
-
-
 }
 
 String makeJsonPayload(int values[4]) { // Fixed parameter types
@@ -214,25 +333,31 @@ void startAdv(void)
 
 void uart_rx_callback(uint16_t conn_handle) {
     (void) conn_handle;
+    static bool json_started = false;
     static int brace_count = 0;
-    static bool in_string = false;
-    static bool escape = false;
-
+    static int brace_state = 0;
     while (bleuart.available()) {
         char c = (char)bleuart.read();
-        rxBuffer += c;
-
-        
-        if (escape) { escape = false; continue; }
-        if (c == '\\') { escape = true; continue; }
-        if (c == '"') { in_string = !in_string; }
-        if (!in_string) {
-            if (c == '{') brace_count++;
-            if (c == '}') brace_count--;
+        Serial.print(c); // USB Serial’e aktar
+        // Détecter le début d'un JSON
+        if (c == '{' && !json_started) {
+            json_started = true;
+            brace_count = 0;
+            brace_state=1;
+            rxBuffer = ""; // Vider le buffer pour un nouveau message
         }
         
-        if (brace_count == 0 && rxBuffer.length() > 0 && !callback) {
-            callback=true;
+        if (json_started) {
+            rxBuffer += c;
+            if (c == '{') brace_count++;
+            if (c == '}') brace_count--;
+            
+            // JSON complet détecté
+            if (brace_count == 0 && rxBuffer.length() > 2) {
+                callback = true;
+                json_started = false;
+                break;
+            }
         }
     }
 }
@@ -240,13 +365,28 @@ void uart_rx_callback(uint16_t conn_handle) {
 void parseJsonBuffer(const String &buffer) {
   if (buffer.length() == 0) return; // boş string geldiyse çık
 
+  // CORRECTION : Nettoyer le buffer des caractères de contrôle et newlines
+  String cleanBuffer = buffer;
+  cleanBuffer.trim(); // Enlever les espaces et newlines au début/fin
+  
+  // Optionnel : debug pour voir ce qu'on reçoit
+  Serial.print("Received buffer length: ");
+  Serial.println(cleanBuffer.length());
+  Serial.print("Buffer content: ");
+  Serial.println(cleanBuffer);
+
   StaticJsonDocument<2048> doc;
-  DeserializationError err = deserializeJson(doc, buffer);
+  DeserializationError err = deserializeJson(doc, cleanBuffer); // Utiliser cleanBuffer
 
   if (err) {
     Serial.print("JSON parse error: ");
     Serial.println(err.f_str());
     return;
+  }
+
+
+ if (doc.containsKey("state")) {
+    mysistem.state = doc["state"] | false;
   }
 
   // sequences kısmını al
@@ -259,26 +399,24 @@ void parseJsonBuffer(const String &buffer) {
       int delayMs  = obj["time_delay_ms"]| 0;
       int readMs   = obj["time_read_ms"] | 0;
       bool enabled = obj["enabled"]      | false;
-
+      /*
       Serial.print("Pin: "); Serial.print(pin);
       Serial.print(" open: "); Serial.print(openMs);
       Serial.print(" delay: "); Serial.print(delayMs);
       Serial.print(" read: "); Serial.print(readMs);
       Serial.print(" enabled: "); Serial.println(enabled);
-
+      */
+      pin--;
       if (enabled && pin >= 0 && pin < 4) {
         mysistem.state = true;
         myleds.leds[pin].kalansure       = openMs;
         mysistem.myAds.adc_delay[pin]    = delayMs;
         mysistem.myAds.adc_readtime[pin] = readMs;
         mysistem.myAds.read_state[pin]   = true;
-
-        handle(pin, openMs * 1000);
-        digitalWrite(myleds.pinNos[pin], HIGH);
       } 
       else if (pin >= 0 && pin < 4) {
         mysistem.myAds.read_state[pin] = false;
-        timer_stop_handle(pin);
+        //mysistem.myAds.adc[pin]=0;
       }
     }
   } else {
@@ -286,105 +424,27 @@ void parseJsonBuffer(const String &buffer) {
   }
 }
 
-
-void timer_start_handle(int id){
-  switch(id){
-    case 0:
-    NRF_TIMER1->TASKS_START = 1;
-    break;
-    case 1:
-    NRF_TIMER2->TASKS_START = 1;
-    break;
-    case 2:
-    NRF_TIMER3->TASKS_START = 1;
-    break;
-    case 3:
-    NRF_TIMER4->TASKS_START = 1;
-    break;
-    default:
-    break;
+extern "C" void TIMER1_IRQHandler(void) {
+  if (NRF_TIMER1->EVENTS_COMPARE[0]) {
+    NRF_TIMER1->TASKS_STOP = 1; 
+    NRF_TIMER1->EVENTS_COMPARE[0] = 0;   // Bayrak temizle
+    digitalWrite(itr+4,LOW);
+    dongu_led[itr]=true;
   }
 }
 
-void timer_stop_handle(int id){
-  switch(id){
-    case 0:
-    NRF_TIMER1->TASKS_STOP = 1;
-    break;
-    case 1:
-    NRF_TIMER2->TASKS_STOP = 1;
-    break;
-    case 2:
-    NRF_TIMER3->TASKS_STOP = 1;
-    break;
-    case 3:
-    NRF_TIMER4->TASKS_STOP = 1;
-    break;
-    default:
-    break;
-  }
+void timer1_init() {
+  NRF_TIMER1->TASKS_STOP = 1; 
+  NRF_TIMER1->MODE = TIMER_MODE_MODE_Timer;
+  NRF_TIMER1->BITMODE = TIMER_BITMODE_BITMODE_32Bit << TIMER_BITMODE_BITMODE_Pos;
+  NRF_TIMER1->PRESCALER = 4;               // 1 MHz (1 µs per tick)
+
+  NRF_TIMER1->INTENSET = TIMER_INTENSET_COMPARE0_Enabled << TIMER_INTENSET_COMPARE0_Pos;
+  NRF_TIMER1->SHORTS = TIMER_SHORTS_COMPARE0_CLEAR_Enabled << TIMER_SHORTS_COMPARE0_CLEAR_Pos;
+
+  NVIC_EnableIRQ(TIMER1_IRQn);
+
 }
-
-void timer_interrupt_set(int id){
-  switch(id){
-    case 0:
-    NRF_TIMER1->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
-    break;
-    case 1:
-    NRF_TIMER2->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
-    break;
-    case 2:
-    NRF_TIMER3->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
-    break;
-    case 3:
-    NRF_TIMER4->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
-    break;
-    default:
-    break;
-  }
-}
-
-
-void handle(int8_t led_id,uint32_t time_open_v){
-  switch(led_id){
-    case 0:
-    NRF_TIMER1->TASKS_STOP = 1;
-    NRF_TIMER1->TASKS_CLEAR = 1;
-    NRF_TIMER1->CC[0]=time_open_v;
-    break;
-
-    case 1:
-    NRF_TIMER2->TASKS_STOP = 1;
-    NRF_TIMER2->TASKS_CLEAR = 1;
-    NRF_TIMER2->CC[0]=time_open_v;
-    break;
-
-    case 2:
-    NRF_TIMER3->TASKS_STOP = 1;
-    NRF_TIMER3->TASKS_CLEAR = 1;
-    NRF_TIMER3->CC[0]=time_open_v;
-    break;
-
-    case 3:
-    NRF_TIMER4->TASKS_STOP = 1;
-    NRF_TIMER4->TASKS_CLEAR = 1;
-    NRF_TIMER4->CC[0]=time_open_v;
-    break;
-
-    default:
-    break;
-  }
-}
-
-
-void printResetReason() {
-  uint32_t reas = NRF_POWER->RESETREAS;
-  Serial.print("RESETREAS = 0x"); Serial.println(reas, HEX);
-  // clear
-  NRF_POWER->RESETREAS = reas;
-}
-
-
 
 /*
 gelen veri yapısı
@@ -392,5 +452,5 @@ state
 timeopen led'in yanma süresi ms
 timedelay led yanmaya başladıktan timedelay ms sonra adc verisini okumaya başla
 time read   
-pin (0,1,2,3), -1 için hepsi olsun
+pin (0,1,2,3)
 */

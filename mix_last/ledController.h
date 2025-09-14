@@ -16,7 +16,7 @@ public:
     void update(int itr);
     void pauseAllExcept(int activeIndex);
     void resumeAll();
-    void handleTimerEvent(int timerIdx);
+    void handleTimerEvent();
     void adsBaglanmadiLedBildir();
 
     // Üyeler
