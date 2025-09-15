@@ -4,10 +4,9 @@
 #include "Arduino.h"
 
 class led{
-  private:
-  int pinNo;
 
   public:
+  int pinNo;
   int kalansure;
   int counter;
   

@@ -2,9 +2,6 @@
 #include "sistem.h"
 extern sistem mysistem;
 
-
-
-
 ads1115::ads1115() {
   for (int i = 0; i < 4; i++) {
     adc[i] = 0;

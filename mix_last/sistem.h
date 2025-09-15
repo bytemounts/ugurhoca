@@ -2,34 +2,35 @@
 #define sistem_h
 
 #include "ads.h"
+#include "ledController.h"
 
-
-// sistem.h (veya yeni bir header dosyası, örn. channelStates.h)
 enum ChannelState {
-  CHANNEL_IDLE,                 // Kanal şu anda aktif değil, bekliyor
-  LED_ON,                       // LED açık, time_open süresi sayılıyor
-  DELAY_COUNTING,               // LED kapandı, ADC okuma gecikmesi sayılıyor
-  ADC_READING_PHASE,            // ADC okuma süresi boyunca örnekler alınıyor
-  CYCLE_COMPLETE                // Bir döngü tamamlandı, sonraki kanala geçmeye hazır (veya beklemede)
+  CHANNEL_IDLE,
+  DELAY_COUNTING,
+  ADC_READING_PHASE,
+  CYCLE_COMPLETE
 };
 
-struct prc{
-  bool led;
-  bool delay;
-  bool adc_read;
+struct ChannelData {
+  ChannelState state;
+  unsigned long startTime;
+  unsigned long adcAccumulator;
+  int adcReadCount;
+  bool processComplete;
 };
 
-struct sistem{
+struct sistem {
   String SisteminAdi;
-  String versiyon;
+  String versiyon="version 1.0";
   ads1115 myAds;
-  ChannelState channelState[4]; // Her kanal için durum
-  prc process[4];
-  int process_itr = 0;
-  int process_pos = 0;
-  bool state;
+  ledController myLeds;
+  ChannelData channels[4];
+  int currentChannel=0;
+  bool systemEnabled=false;
+  volatile bool timer1Expired=false;
+  volatile bool timer2Expired=false;
+  String rxBuffer="";
+  bool jsonCallback=false;
 };
-
-
 
 #endif
