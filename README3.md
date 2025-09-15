@@ -34,12 +34,12 @@ Ledler ve I2C için:
 - ADC veri okuyucularının belirlenen indeksi ve belirlenen süresi için kaç ms okuma yapacağı sınıfın içinde tutulmuştur.
 - Bluetooth'dan her veri geldiğinde kesme yapılır ve ilgili fonksiyona subroutine yapılır. Burada ise gelen veri kutusuna göre işlemler yapılır.
 ### 2.Led Kontrol Sistemi(ledClass.h, ledClass.cpp, ledController.h, ledController.cpp)
-- Timerlar ledController bünyesinde çalıştırılmıştır.
+- Ledlerin kontrolü zamanlayıcı ISR(interrupt subroutine) ile yapılmıştır.
 - Bilgisayardan BLE ile mikroişlemciye gönderilen veri kutusundaki verilere göre gelen pin numarasına tanımlı olan led'in timer süresi değiştirilir ve timer başlatılır(eğer state true ise).
 ### 3.BLE İletişimi (mix_last.ino)
 - Json formatında veri paketleme ve açma.
 - BLE bağlantı yönetimi (alma ve gönderme).
-- Ana yapılandırma dosyası mix_last.ino içerisindedir ve modüler yapı sayesinde kolayca genişletilebilir.
+- Ana yapılandırma dosyası mix_last.ino içerisindedir.
 ### 4.Sistem Yapılandırılması(sistem.h, sistem.cpp)
 - Genel sistem yapısının tanımlanması.
 - Global mysistem burada tanımlanmıştır, diğer dosyalardan bu değişkene erişim için extern ifadesi için ilgili dosyalarla tanımlama yapılmıştır.
