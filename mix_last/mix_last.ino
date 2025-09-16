@@ -13,8 +13,10 @@ sistem mysistem;
 
 void setup() {
   Serial.begin(9600);
-  while (!Serial)
-    ;
+  delay(500);
+  //while (!Serial){
+
+ // };
   Serial.println("Program basladi");
 
   // Initialize BLE
@@ -66,11 +68,16 @@ void loop() {
     if (mysistem.systemEnabled) {
       processCurrentChannel();
     }
-  } else {
+    else{
+      resetsystem();
+    }
+  } 
+  else {
     if (mysistem.myAds.is_adc_started) {
-      analogWrite(22,byte(128));
+      analogWrite(22,byte(1));
     }
     handleChill();
+    
     // Bluetooth not connected
     
   }
@@ -85,28 +92,29 @@ void processCurrentChannel() {
     advanceToNextChannel();
     return;
   }
+  /*
   Serial.print("-> Kanal ");
   Serial.print(mysistem.currentChannel);
   Serial.print(" durumu: ");
-
+  */
   switch (current.state) {
     case CHANNEL_IDLE:
-      Serial.println("IDLE - Başlatılıyor");
+      //Serial.println("IDLE - Başlatılıyor");
       startChannelProcessing(current);
       break;
 
     case DELAY_COUNTING:
-      Serial.println("DELAY_COUNTING - Gecikme süreci");
+      //Serial.println("DELAY_COUNTING - Gecikme süreci");
       handleDelayCounting(current);
       break;
 
     case ADC_READING_PHASE:
-      Serial.println("ADC_READING_PHASE - ADC ölçüm süreci");
+      //Serial.println("ADC_READING_PHASE - ADC ölçüm süreci");
       handleAdcReading(current);
       break;
 
     case CYCLE_COMPLETE:
-      Serial.println("CYCLE_COMPLETE - Tamamlandı, sonraki kanal");
+      //Serial.println("CYCLE_COMPLETE - sonraki kanal için led bekleniyor");
       completeChannelProcessing(current);
       break;
   }
@@ -290,7 +298,8 @@ void parseJsonBuffer(const String& buffer) {
 
   // Update system state
   if (doc.containsKey("state")) {
-    mysistem.systemEnabled = doc["state"] | false;
+    mysistem.systemEnabled = doc["state"];
+    mysistem.sistemResetlendiMi=false;
   }
 
   // Update channel sequences
@@ -331,7 +340,7 @@ void parseJsonBuffer(const String& buffer) {
 void handleChill(){
   //timerları durdur.
   
-  if(digitalRead(mysistem.currentChannel))analogWrite(mysistem.currentChannel+4,0);
+  analogWrite(mysistem.currentChannel+4,0);
   NRF_TIMER1->TASKS_STOP = 1;
   NRF_TIMER2->TASKS_STOP = 1;
   sd_app_evt_wait();
@@ -355,17 +364,22 @@ extern "C" void TIMER2_IRQHandler(void) {
   }
 }
 void resetsystem(){
-  NRF_TIMER1->TASKS_STOP = 1;
-  NRF_TIMER2->TASKS_STOP = 1;
-  NRF_TIMER1->TASKS_CLEAR = 1;  
-  NRF_TIMER2->TASKS_CLEAR = 1;  
-  mysistem.currentChannel=0;
-  mysistem.systemEnabled=false;
-  mysistem.timer1Expired=false;
-  mysistem.timer2Expired=false;
-  mysistem.rxBuffer="";
-  mysistem.jsonCallback=false;
-  Serial.println("[!] Sistem sıfırlandı.");
+  if(!mysistem.sistemResetlendiMi){
+    analogWrite(mysistem.currentChannel+4,0);
+    NRF_TIMER1->TASKS_STOP = 1;
+    NRF_TIMER2->TASKS_STOP = 1;
+    NRF_TIMER1->TASKS_CLEAR = 1;  
+    NRF_TIMER2->TASKS_CLEAR = 1;  
+    mysistem.channels[mysistem.currentChannel].state = CHANNEL_IDLE;
+    mysistem.currentChannel=0;
+    mysistem.timer1Expired=false;
+    mysistem.timer2Expired=false;
+    mysistem.rxBuffer="";
+    mysistem.jsonCallback=false;
+    Serial.println("[!] Sistem sıfırlandı ve şuan sistem kapalı, işlemleri başlatmak için sistemi açınız.");
+    mysistem.sistemResetlendiMi=true;
+  }
+  
 }
 void timer1_init() {
   NRF_TIMER1->TASKS_STOP = 1;
