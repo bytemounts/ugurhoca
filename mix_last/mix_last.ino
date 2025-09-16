@@ -11,6 +11,10 @@ BLEBas blebas;
 
 sistem mysistem;
 
+  int brightness;
+  int raw;
+  char c;
+  String str="";
 void setup() {
   Serial.begin(9600);
   while (!Serial)
@@ -51,6 +55,7 @@ void setup() {
   }
 }
 
+
 void loop() {
   if (!mysistem.myAds.is_adc_started) {
     mysistem.myAds.begin();
@@ -65,13 +70,36 @@ void loop() {
     }
   } else {
     if (mysistem.myAds.is_adc_started) {
-      digitalWrite(LED_BUILTIN, HIGH);
+      analogWrite(LED_BUILTIN,byte(128));
     }
     handleChill();
     // Bluetooth not connected
     
   }
+  // check if data has been sent from the computer:
+  
 }
+
+
+/*
+void ledehukmet(){
+  while(Serial.available()){
+    c = Serial.read();
+    if(c=='\n'|| c=='\r'){
+      brightness = str.toInt();
+      byte genc;
+      genc = (byte)brightness;
+      Serial.println(brightness);
+      Serial.println(genc);
+      brightness = map(brightness,0,100, 0, 255);
+      analogWrite(4,brightness);
+      str="";
+    }else{
+      str+=c;
+    }
+  }
+}
+*/
 
 void processCurrentChannel() {
   ChannelData& current = mysistem.channels[mysistem.currentChannel];
@@ -112,8 +140,8 @@ void startChannelProcessing(ChannelData& channel) {
   //start 
   NRF_TIMER2->CC[0] = mysistem.myAds.adc_delay[mysistem.currentChannel] * 1000;//delay controller
   NRF_TIMER2->TASKS_START = 1;
-
-  digitalWrite(mysistem.currentChannel + 4, HIGH);
+  mysistem.b = map(mysistem.myLeds.leds[mysistem.currentChannel].led_parlaklik_orani,0,100, 0, 255);
+  analogWrite(mysistem.currentChannel + 4,mysistem.b);
 }
 
 void handleLedOnState(ChannelData& channel) {
@@ -289,10 +317,17 @@ void parseJsonBuffer(const String& buffer) {
       int delayMs = obj["time_delay_ms"] | 0;
       int readMs = obj["time_read_ms"] | 0;
       bool enabled = obj["enabled"] | false;
+      int lpo=obj["lpo"] | 0;
+
+      Serial.println(lpo);
+
+
+
 
       pin--;
       if (pin >= 0 && pin < 4) {
         mysistem.myLeds.leds[pin].kalansure = openMs;
+        mysistem.myLeds.leds[pin].led_parlaklik_orani=lpo;
         mysistem.myAds.adc_delay[pin] = delayMs;
         mysistem.myAds.adc_readtime[pin] = readMs;
         mysistem.myAds.read_state[pin] = enabled;
@@ -331,7 +366,18 @@ extern "C" void TIMER2_IRQHandler(void) {
     mysistem.timer2Expired = true;
   }
 }
-
+void resetsystem(){
+  NRF_TIMER1->TASKS_STOP = 1;
+  NRF_TIMER2->TASKS_STOP = 1;
+  NRF_TIMER1->TASKS_CLEAR = 1;  
+  NRF_TIMER2->TASKS_CLEAR = 1;  
+  mysistem.currentChannel=0;
+  mysistem.systemEnabled=false;
+  mysistem.timer1Expired=false;
+  mysistem.timer2Expired=false;
+  mysistem.rxBuffer="";
+  mysistem.jsonCallback=false;
+}
 void timer1_init() {
   NRF_TIMER1->TASKS_STOP = 1;
   NRF_TIMER1->MODE = TIMER_MODE_MODE_Timer;
