@@ -46,6 +46,7 @@ class TimingEntry:
     time_open_ms: int = 100  # LED on time in milliseconds
     time_delay_ms: int = 50  # Delay before measurement starts
     time_read_ms: int = 10   # ADC reading duration
+    brightness: int = 40
     pin: int = 1  # LED pin number
     enabled: bool = False  # Timing entry enabled/disabled
     index: int = None  # Timing entry index
@@ -1154,6 +1155,13 @@ class BLEDataAcquisitionGUI:
             led_combo.pack(side=tk.LEFT, padx=15, pady=10)
             widgets['pin'] = led_pin_var  # CHANGÉ: utilise 'pin' au lieu de 'led_pin'
 
+            # Brightness (0-100)
+            brightness_var = tk.IntVar(value=100)
+            brightness_entry = tk.Spinbox(row_frame, from_=0, to=100, width=6,
+                              textvariable=brightness_var, font=('Arial', 10), justify=tk.CENTER)
+            brightness_entry.pack(side=tk.LEFT, padx=15, pady=10)
+            widgets['brightness'] = brightness_var  # Yeni alanı kaydet
+
             # Synchronisation LED combo avec variable
             def on_led_change(event=None):
                 try:
@@ -1238,6 +1246,7 @@ class BLEDataAcquisitionGUI:
                         time_delay = int(widget_set['time_delay_ms'].get() or 0)
                         time_read = int(widget_set['time_read_ms'].get() or 0)
                         led_pin = widget_set['pin'].get()  # CHANGÉ: de 'led_pin' à 'pin'
+                         
                         
                         cycle_time = time_open + time_delay + time_read + 10
                         total_time += cycle_time
@@ -1292,6 +1301,7 @@ class BLEDataAcquisitionGUI:
                 time_open_ms=100,
                 time_delay_ms=50, 
                 time_read_ms=10,
+                brightness=100,
                 pin=1,
                 enabled=True,
                 index=1
@@ -1332,6 +1342,7 @@ class BLEDataAcquisitionGUI:
                             time_delay = int(widget_set['time_delay_ms'].get() or 50) 
                             time_read = int(widget_set['time_read_ms'].get() or 10)
                             led_pin = int(widget_set['pin'].get())  # CHANGÉ: de 'led_pin' à 'pin'
+                            brightness = int(widget_set['brightness'].get())
                             
                             print(f"Entry {i}: enabled={enabled}, led_pin={led_pin}, "
                                 f"times=({time_open},{time_delay},{time_read})")
@@ -1341,6 +1352,7 @@ class BLEDataAcquisitionGUI:
                                 time_open_ms=time_open,
                                 time_delay_ms=time_delay,
                                 time_read_ms=time_read,
+                                brightness=brightness,
                                 pin=led_pin,
                                 enabled=enabled,
                                 index=i + 1
@@ -1792,7 +1804,7 @@ class BLEDataAcquisitionGUI:
                 
                 # create a unique key for the timing entry
                 timing_key = (timing.pin, timing.time_open_ms, 
-                            timing.time_delay_ms, timing.time_read_ms, timing.enabled)
+                            timing.time_delay_ms, timing.time_read_ms, timing.brightness,timing.enabled)
 
                 # Only add if this combination doesn't already exist
                 if timing_key not in unique_sequences:
@@ -1802,7 +1814,8 @@ class BLEDataAcquisitionGUI:
                         "time_open_ms": timing.time_open_ms,
                         "time_delay_ms": timing.time_delay_ms,
                         "time_read_ms": timing.time_read_ms,
-                        "enabled": timing.enabled
+                        "enabled": timing.enabled,
+                        "lpo": timing.brightness
                     }
                     unique_sequences[timing_key] = sequence
         
