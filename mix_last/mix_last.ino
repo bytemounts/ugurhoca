@@ -68,9 +68,6 @@ void loop() {
     if (mysistem.systemEnabled) {
       processCurrentChannel();
     }
-    else{
-      resetsystem();
-    }
   } 
   else {
     if (mysistem.myAds.is_adc_started) {
@@ -113,10 +110,16 @@ void processCurrentChannel() {
       handleAdcReading(current);
       break;
 
+    case CALIBRATION:
+      handleCalibrationProcess(current);
+      break;
+
     case CYCLE_COMPLETE:
       //Serial.println("CYCLE_COMPLETE - sonraki kanal için led bekleniyor");
       completeChannelProcessing(current);
       break;
+
+    
   }
 }
 
@@ -183,8 +186,14 @@ void completeChannelProcessing(ChannelData& channel) {
   }
 }
 
+void handleCalibrationProcess(ChannelData& channel){
+  mysistem.channels[mysistem.currentChannel].adcAccumulator = mysistem.myAds.ads.readADC_SingleEnded(mysistem.currentChannel);
+  String send=makeJsonCalibration();
+  sendJsonPayload(send);
+}
+
 void advanceToNextChannel() {
-  mysistem.currentChannel = (mysistem.currentChannel + 1) % 4;
+  mysistem.currentChannel = (mysistem.currentChannel + 1) % 5;
 }
 
 String makeJsonPayload(int values[4]) {
@@ -207,9 +216,17 @@ String makeJsonPayload(int values[4]) {
   s += "\n";
   return s;
 }
-
+String makeJsonCalibration(){
+  String s = "[";
+  s+=String(mysistem.currentChannel);
+  s+=",";
+  s+=String(mysistem.channels[mysistem.currentChannel].adcAccumulator);
+  s += "]";
+  s += "\n";
+  return s;
+}
 void sendJsonPayload(const String& payload) {
-  Serial.print(">> Gönderilen JSON: ");
+  //Serial.print(">> Gönderilen JSON: ");
   Serial.println(payload);  // JSON verisini yazdır
   bleuart.write((uint8_t*)payload.c_str(), payload.length());
 }
@@ -276,8 +293,8 @@ void handleBleMessages() {
   if (mysistem.jsonCallback) {
     mysistem.rxBuffer.trim();
     parseJsonBuffer(mysistem.rxBuffer);
-    mysistem.rxBuffer = "";
-    mysistem.jsonCallback = false;
+    mysistem.sistemResetlendiMi=false;
+    resetsystemVar();
   }
 }
 
@@ -299,9 +316,19 @@ void parseJsonBuffer(const String& buffer) {
   // Update system state
   if (doc.containsKey("state")) {
     mysistem.systemEnabled = doc["state"];
-    if(!mysistem.systemEnabled)mysistem.sistemResetlendiMi=false;
   }
-
+  if(doc.containsKey("clb")){//calibration
+    bool state = doc["clb"];
+    uint8_t index = doc["index"];
+    if(state){
+      mysistem.channels[index].state = CALIBRATION;
+      analogWrite(index + 4,255);//parlaklık max kabul edilmiştir.
+    }
+    else{
+      mysistem.channels[index].state=CHANNEL_IDLE;
+      analogWrite(index + 4,0);
+    }
+  }
   // Update channel sequences
   if (doc.containsKey("sequences") && doc["sequences"].is<JsonArray>()) {
     JsonArray arr = doc["sequences"].as<JsonArray>();
@@ -339,7 +366,6 @@ void parseJsonBuffer(const String& buffer) {
 
 void handleChill(){
   //timerları durdur.
-  
   analogWrite(mysistem.currentChannel+4,0);
   NRF_TIMER1->TASKS_STOP = 1;
   NRF_TIMER2->TASKS_STOP = 1;
@@ -361,9 +387,12 @@ extern "C" void TIMER2_IRQHandler(void) {
     mysistem.timer2Expired = true;
   }
 }
-void resetsystem(){
+void resetsystemVar(){
   if(!mysistem.sistemResetlendiMi){
-    analogWrite(mysistem.currentChannel+4,0);
+    analogWrite(4,0);
+    analogWrite(5,0);
+    analogWrite(6,0);
+    analogWrite(7,0);
     NRF_TIMER1->TASKS_STOP = 1;
     NRF_TIMER2->TASKS_STOP = 1;
     NRF_TIMER1->TASKS_CLEAR = 1;  
@@ -377,6 +406,7 @@ void resetsystem(){
     Serial.println("[!] Sistem sıfırlandı ve şuan sistem kapalı, işlemleri başlatmak için sistemi açınız.");
     mysistem.sistemResetlendiMi=true;
     sd_app_evt_wait();
+    //calibration json formatı ayarla, her json geldiğinde reset fonksiyonunu kullan, led1 yak, raw data gönder, yeni state: calibration
   }
   
 }
