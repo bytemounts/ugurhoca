@@ -63,14 +63,14 @@ void loop() {
 
   if (Bluefruit.connected()) {
     handleBleMessages();
-    digitalWrite(22, LOW);  // Bluetooth connected indicator
+    analogWrite(22,byte(0));  // Bluetooth connected indicator
 
     if (mysistem.systemEnabled) {
       processCurrentChannel();
     }
   } else {
     if (mysistem.myAds.is_adc_started) {
-      analogWrite(LED_BUILTIN,byte(128));
+      analogWrite(22,byte(128));
     }
     handleChill();
     // Bluetooth not connected
@@ -79,27 +79,6 @@ void loop() {
   // check if data has been sent from the computer:
   
 }
-
-
-/*
-void ledehukmet(){
-  while(Serial.available()){
-    c = Serial.read();
-    if(c=='\n'|| c=='\r'){
-      brightness = str.toInt();
-      byte genc;
-      genc = (byte)brightness;
-      Serial.println(brightness);
-      Serial.println(genc);
-      brightness = map(brightness,0,100, 0, 255);
-      analogWrite(4,brightness);
-      str="";
-    }else{
-      str+=c;
-    }
-  }
-}
-*/
 
 void processCurrentChannel() {
   ChannelData& current = mysistem.channels[mysistem.currentChannel];
@@ -141,12 +120,17 @@ void startChannelProcessing(ChannelData& channel) {
   NRF_TIMER2->CC[0] = mysistem.myAds.adc_delay[mysistem.currentChannel] * 1000;//delay controller
   NRF_TIMER2->TASKS_START = 1;
   mysistem.b = map(mysistem.myLeds.leds[mysistem.currentChannel].led_parlaklik_orani,0,100, 0, 255);
+  //
+  Serial.print("Channel: ");
+  Serial.print(mysistem.currentChannel);
+  Serial.print(" - PWM Value: ");
+  Serial.println(mysistem.b);
   analogWrite(mysistem.currentChannel + 4,mysistem.b);
 }
 
 void handleLedOnState(ChannelData& channel) {
   if (mysistem.timer1Expired) {
-    digitalWrite(mysistem.currentChannel + 4, LOW);
+    analogWrite(mysistem.currentChannel + 4, byte(0));
   }
 }
 
@@ -343,7 +327,7 @@ void parseJsonBuffer(const String& buffer) {
 void handleChill(){
   //timerları durdur.
   
-  if(digitalRead(mysistem.currentChannel))digitalWrite(mysistem.currentChannel+4,LOW);
+  if(digitalRead(mysistem.currentChannel))analogWrite(mysistem.currentChannel+4,0);
   NRF_TIMER1->TASKS_STOP = 1;
   NRF_TIMER2->TASKS_STOP = 1;
   sd_app_evt_wait();
