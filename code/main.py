@@ -74,9 +74,32 @@ class SensorConfig:
     timing_entries: List[TimingEntry] = None
     active_timing_index: int = 0
 
+    # Calibration metadata
+    is_calibrated: bool = False
+    calibration_function_formula: str = ""
+    calibration_r_squared: float = 0.0
+    calibration_date: str = ""
+
     def __post_init__(self):
         if self.timing_entries is None:
             self.timing_entries = [TimingEntry(on_time_ms=100, off_time_ms=900, enabled=False, index=1)]
+        if self.calibration_points is None:
+            self.calibration_points = []
+
+    def apply_calibration(self, raw_value: float) -> float:
+        """Apply calibration function to convert raw value to real concentration"""
+        if not self.is_calibrated or not self.calibration_coeffs:
+            return raw_value
+        
+        try:
+            # Polynomial calibration: y = a*x^2 + b*x + c
+            if len(self.calibration_coeffs) >= 2:
+                a, b = self.calibration_coeffs[:2]
+                c = self.calibration_coeffs[2] if len(self.calibration_coeffs) > 2 else 0
+                return a * raw_value * raw_value + b * raw_value + c
+            return raw_value
+        except Exception:
+            return raw_value
 
 class BLEDataManager:
     """Manages BLE communication and data handling - Optimized for real-time"""
@@ -90,6 +113,7 @@ class BLEDataManager:
         self.led_isolation_mode = False
         self.current_active_led = None  # Track currently active LED for isolation
         self.system_state = True 
+        self.last_applied_timing_config = None
 
         # Initialize message sending variables (add this before setup_gui())
         self.message_entry = None
@@ -253,7 +277,7 @@ class BLEDataManager:
                 
                 # Check if device matches our criteria
                 if (NUS_SERVICE in uuids or 
-                    any(keyword in name for keyword in ["bluefruit", "feather", "json_sender", "nrf"])):
+                    any(keyword in name for keyword in ["bluefruit", "feather", "json_sender", "nrf", "genc"])):
                     found_devices.append(device)
                     self._log_message(f"Found compatible device: {device.name} ({device.address})")
                     
@@ -627,6 +651,7 @@ class BLEDataAcquisitionGUI:
                                  command=self.start_recording, state=tk.DISABLED, **button_style)
         self.start_btn.pack(side=tk.LEFT, padx=5)
         
+        # Stop button
         self.stop_btn = tk.Button(control_frame, text="STOP", bg='#e74c3c', fg='white',
                                 command=self.stop_recording, state=tk.DISABLED, **button_style)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
@@ -636,14 +661,22 @@ class BLEDataAcquisitionGUI:
                                    command=self.open_timing_config, **button_style)
         self.timing_btn.pack(side=tk.LEFT, padx=5)
         
+        # Calibration controls
+        self.calibration_btn = tk.Button(control_frame, text="CALIBRATION", bg='#16a085', fg='white',
+                                   command=self.open_calibration_panel, **button_style)
+        self.calibration_btn.pack(side=tk.LEFT, padx=5)
+
+        # Data export and clear  
         self.export_btn = tk.Button(control_frame, text="EXPORT", bg='#8e44ad', fg='white',
                                   command=self.export_data, state=tk.DISABLED, **button_style)
         self.export_btn.pack(side=tk.LEFT, padx=5)
         
+        # Clear button
         self.clear_btn = tk.Button(control_frame, text="CLEAR", bg='#e67e22', fg='white',
                                  command=self.clear_data, **button_style)
         self.clear_btn.pack(side=tk.LEFT, padx=5)
-
+        
+        # State control
         self.state_btn = tk.Button(control_frame, text="STATE ON", bg='#1abc9c', fg='white',
                              command=self.toggle_state, state=tk.DISABLED, **button_style)
         self.state_btn.pack(side=tk.LEFT, padx=5)
@@ -1023,7 +1056,7 @@ class BLEDataAcquisitionGUI:
         self.status_var.set("Data cleared")
     
     def open_timing_config(self):
-        """Open professional timing configuration window - VERSION CORRIGÉE PROFESSIONNELLEMENT"""
+        """Open professional timing configuration window """
         timing_window = tk.Toplevel(self.root)
         timing_window.title("LED Sequential Timing Configuration - Professional")
         timing_window.geometry("1200x900")
@@ -1037,7 +1070,12 @@ class BLEDataAcquisitionGUI:
         y = (timing_window.winfo_screenheight() // 2) - 450
         timing_window.geometry(f"1200x900+{x}+{y}")
 
-        # Header
+        # VARIABLES DÉFINIES EN PREMIER
+        timing_widgets = []
+        timing_count = [0]
+        MAX_TIMING_ENTRIES = 4
+
+        # Header avec bouton Add Timing intégré
         header_frame = tk.Frame(timing_window, bg='#34495e', height=70)
         header_frame.pack(fill=tk.X, padx=15, pady=15)
         header_frame.pack_propagate(False)
@@ -1045,6 +1083,12 @@ class BLEDataAcquisitionGUI:
         title_label = tk.Label(header_frame, text="LED Sequential Timing Configuration", 
                             font=('Arial', 18, 'bold'), fg='white', bg='#34495e')
         title_label.pack(side=tk.LEFT, padx=25, pady=20)
+        
+        # NOUVEAU: Bouton Add Timing dans le header (côté gauche)
+        add_btn = tk.Button(header_frame, text=f"+ Add Timing (0/{MAX_TIMING_ENTRIES})", 
+                        bg='#27ae60', fg='white', font=('Arial', 12, 'bold'), 
+                        width=25, height=1)
+        add_btn.pack(side=tk.LEFT, padx=50, pady=20)
         
         # Main content
         main_frame = tk.Frame(timing_window, bg='#ecf0f1', relief=tk.RAISED, bd=1)
@@ -1054,23 +1098,26 @@ class BLEDataAcquisitionGUI:
                                     font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
         config_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
         
-        # Create timing entries table
+        # Create timing entries table - ÉTENDU POUR PRENDRE TOUTE LA PLACE
         timing_entries_frame = tk.Frame(config_frame, bg='#ecf0f1')
         timing_entries_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
         
-        # Headers
-        headers = ["Enable", "Time Open (ms)", "Time Delay (ms)", "Time Read (ms)", "Target LED", "Actions"]
+        # Headers avec largeurs adaptées à la fenêtre complète
+        headers = ["Enable", "Time Open (ms)", "Time Delay (ms)", "Time Read (ms)", "Target LED", "Brightness", "Actions"]
         header_frame = tk.Frame(timing_entries_frame, bg='#34495e', relief=tk.RAISED, bd=1)
         header_frame.pack(fill=tk.X, pady=(0, 8))
+
+        # Créer chaque header dans un frame proportionnel
+        for header in headers:
+            header_label_frame = tk.Frame(header_frame, bg='#34495e')
+            header_label_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
+            
+            label = tk.Label(header_label_frame, text=header, font=('Arial', 11, 'bold'), 
+                            fg='white', bg='#34495e', pady=8)
+            label.pack(fill=tk.BOTH, expand=True)
         
-        header_widths = [10, 15, 15, 15, 15, 12]
-        for header, width in zip(headers, header_widths):
-            label = tk.Label(header_frame, text=header, font=('Arial', 11, 'bold'), 
-                            fg='white', bg='#34495e', width=width, pady=8)
-            label.pack(side=tk.LEFT, padx=3, pady=8)
-        
-        # Scrollable frame
-        canvas = tk.Canvas(timing_entries_frame, bg='#ecf0f1', height=420)
+        # Scrollable frame - HAUTEUR ÉTENDUE
+        canvas = tk.Canvas(timing_entries_frame, bg='#ecf0f1', height=500)  # Augmentée de 420 à 500
         scrollbar = ttk.Scrollbar(timing_entries_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg='#ecf0f1')
         
@@ -1081,28 +1128,13 @@ class BLEDataAcquisitionGUI:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # SOLUTION PROFESSIONNELLE: Structure de données clarifiée
+        # Variables et fonctions (reste du code existant...)
         timing_widgets = []
         timing_count = [0]
         MAX_TIMING_ENTRIES = 4
 
-        def debug_widget_structure(widgets_dict, entry_index):
-            """Fonction de debug professionnelle pour identifier la structure des données"""
-            print(f"\n=== DEBUG WIDGET STRUCTURE - Entry {entry_index} ===")
-            print(f"Keys available: {list(widgets_dict.keys())}")
-            for key, value in widgets_dict.items():
-                try:
-                    if hasattr(value, 'get'):
-                        print(f"{key}: {value.get()}")
-                    else:
-                        print(f"{key}: {value}")
-                except Exception as e:
-                    print(f"{key}: ERROR - {e}")
-            print("=" * 50)
-
         def create_timing_entry_row(parent, entry_data=None):
-            """SOLUTION PROFESSIONNELLE: Création de ligne avec structure de données cohérente"""
-            
+            """Création de ligne avec widgets proportionnels aux headers"""
             if timing_count[0] >= MAX_TIMING_ENTRIES:
                 messagebox.showwarning("Limite atteinte", 
                                     f"Maximum {MAX_TIMING_ENTRIES} séquences autorisées")
@@ -1112,56 +1144,82 @@ class BLEDataAcquisitionGUI:
             row_frame = tk.Frame(parent, bg=row_color, relief=tk.SOLID, bd=1)
             row_frame.pack(fill=tk.X, pady=3, padx=2)
             
-            # CORRECTION PROFESSIONNELLE: Structure de données standardisée
             widgets = {
                 'row_frame': row_frame,
                 'entry_index': timing_count[0]
             }
             
-            # Enable checkbox
+            # 1. Enable - Frame proportionnel
+            enable_frame = tk.Frame(row_frame, bg=row_color)
+            enable_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
             enable_var = tk.BooleanVar(value=entry_data.enabled if entry_data else True)
-            enable_check = tk.Checkbutton(row_frame, variable=enable_var, bg=row_color, 
+            enable_check = tk.Checkbutton(enable_frame, variable=enable_var, bg=row_color, 
                                         font=('Arial', 10), activebackground=row_color)
-            enable_check.pack(side=tk.LEFT, padx=(15, 5), pady=12)
-            widgets['enabled'] = enable_var  # ✓ CLÉ CORRECTE
+            enable_check.pack(anchor=tk.CENTER, pady=12)
+            widgets['enabled'] = enable_var
             
-            # Time Open
+            # 2. Time Open - Frame proportionnel
+            time_open_frame = tk.Frame(row_frame, bg=row_color)
+            time_open_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
             time_open_var = tk.StringVar(value=str(entry_data.time_open_ms if entry_data else 100))
-            time_open_entry = tk.Entry(row_frame, textvariable=time_open_var, width=12, 
+            time_open_entry = tk.Entry(time_open_frame, textvariable=time_open_var, 
                                     font=('Arial', 10), justify=tk.CENTER)
-            time_open_entry.pack(side=tk.LEFT, padx=15, pady=10)
-            widgets['time_open_ms'] = time_open_var  # ✓ CLÉ STANDARDISÉE
+            time_open_entry.pack(fill=tk.X, pady=10, padx=3)
+            widgets['time_open_ms'] = time_open_var
             
-            # Time Delay  
+            # 3. Time Delay - Frame proportionnel
+            time_delay_frame = tk.Frame(row_frame, bg=row_color)
+            time_delay_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
             time_delay_var = tk.StringVar(value=str(entry_data.time_delay_ms if entry_data else 50))
-            time_delay_entry = tk.Entry(row_frame, textvariable=time_delay_var, width=12, 
+            time_delay_entry = tk.Entry(time_delay_frame, textvariable=time_delay_var, 
                                     font=('Arial', 10), justify=tk.CENTER)
-            time_delay_entry.pack(side=tk.LEFT, padx=15, pady=10)
-            widgets['time_delay_ms'] = time_delay_var  # ✓ CLÉ STANDARDISÉE
+            time_delay_entry.pack(fill=tk.X, pady=10, padx=3)
+            widgets['time_delay_ms'] = time_delay_var
             
-            # Time Read
+            # 4. Time Read - Frame proportionnel
+            time_read_frame = tk.Frame(row_frame, bg=row_color)
+            time_read_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
             time_read_var = tk.StringVar(value=str(entry_data.time_read_ms if entry_data else 10))
-            time_read_entry = tk.Entry(row_frame, textvariable=time_read_var, width=12, 
+            time_read_entry = tk.Entry(time_read_frame, textvariable=time_read_var, 
                                     font=('Arial', 10), justify=tk.CENTER)
-            time_read_entry.pack(side=tk.LEFT, padx=15, pady=10)  
-            widgets['time_read_ms'] = time_read_var  # ✓ CLÉ STANDARDISÉE
+            time_read_entry.pack(fill=tk.X, pady=10, padx=3)
+            widgets['time_read_ms'] = time_read_var
             
-            # LED Selection - CORRECTION CRITIQUE
+            # 5. LED Selection - Frame proportionnel
+            led_frame = tk.Frame(row_frame, bg=row_color)
+            led_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
             led_pin_var = tk.IntVar(value=entry_data.pin if entry_data else 1)
-            led_combo = ttk.Combobox(row_frame, 
-                                    values=[1, 2, 3, 4], 
-                                    state="readonly", width=12, font=('Arial', 10))
+            led_combo = ttk.Combobox(led_frame, values=[1, 2, 3, 4], state="readonly", 
+                                    font=('Arial', 10))
             led_combo.set(str(led_pin_var.get()))
-            led_combo.pack(side=tk.LEFT, padx=15, pady=10)
-            widgets['pin'] = led_pin_var  # CHANGÉ: utilise 'pin' au lieu de 'led_pin'
+            led_combo.pack(fill=tk.X, pady=10, padx=3)
+            widgets['pin'] = led_pin_var
 
-            # Brightness (0-100)
-            brightness_var = tk.IntVar(value=100)
-            brightness_entry = tk.Spinbox(row_frame, from_=0, to=100, width=6,
-                              textvariable=brightness_var, font=('Arial', 10), justify=tk.CENTER)
-            brightness_entry.pack(side=tk.LEFT, padx=15, pady=10)
-            widgets['brightness'] = brightness_var  # Yeni alanı kaydet
+            # 6. Brightness - Frame proportionnel
+            brightness_frame = tk.Frame(row_frame, bg=row_color)
+            brightness_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
+            brightness_var = tk.IntVar(value=entry_data.brightness if entry_data else 100)
+            brightness_entry = tk.Spinbox(brightness_frame, from_=0, to=100,
+                                textvariable=brightness_var, font=('Arial', 10), justify=tk.CENTER)
+            brightness_entry.pack(fill=tk.X, pady=10, padx=3)
+            widgets['brightness'] = brightness_var
 
+            # 7. Actions - Frame proportionnel
+            action_frame = tk.Frame(row_frame, bg=row_color)
+            action_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=1)
+            
+            def remove_entry():
+                row_frame.destroy()
+                timing_widgets.remove(widgets)
+                timing_count[0] -= 1
+                update_preview()
+                update_add_button_state()
+            
+            remove_btn = tk.Button(action_frame, text="Remove", bg='#e74c3c', fg='white', 
+                                font=('Arial', 9, 'bold'), command=remove_entry)
+            remove_btn.pack(fill=tk.X, pady=10, padx=3)
+            
+            
             # Synchronisation LED combo avec variable
             def on_led_change(event=None):
                 try:
@@ -1173,25 +1231,9 @@ class BLEDataAcquisitionGUI:
 
             led_combo.bind('<<ComboboxSelected>>', on_led_change)
             
-            # Actions
-            action_frame = tk.Frame(row_frame, bg=row_color)
-            action_frame.pack(side=tk.LEFT, padx=15, pady=10)
-            
-            def remove_entry():
-                row_frame.destroy()
-                timing_widgets.remove(widgets)
-                timing_count[0] -= 1
-                update_preview()
-                update_add_button_state()
-            
-            remove_btn = tk.Button(action_frame, text="Remove", bg='#e74c3c', fg='white', 
-                                font=('Arial', 9, 'bold'), command=remove_entry, width=10)
-            remove_btn.pack(side=tk.LEFT, padx=2)
-            
-            # Validation en temps réel
+            # Validation functions (reste identique...)
             def validate_and_update(*args):
                 try:
-                    # Validation des entrées numériques
                     for key in ['time_open_ms', 'time_delay_ms', 'time_read_ms']:
                         var = widgets[key]
                         value = var.get()
@@ -1210,9 +1252,7 @@ class BLEDataAcquisitionGUI:
                 widgets[key].trace('w', validate_and_update)
             enable_var.trace('w', lambda *args: update_preview())
             led_pin_var.trace('w', lambda *args: update_preview())
-            
-            # DEBUG: Afficher la structure pour vérification
-            debug_widget_structure(widgets, timing_count[0])
+            brightness_var.trace('w', lambda *args: update_preview())
             
             timing_widgets.append(widgets)
             timing_count[0] += 1
@@ -1220,7 +1260,7 @@ class BLEDataAcquisitionGUI:
             return widgets
 
         def update_add_button_state():
-            """Mise à jour état bouton Add"""
+            """Mise à jour état bouton Add dans le header"""
             if timing_count[0] >= MAX_TIMING_ENTRIES:
                 add_btn.config(state=tk.DISABLED, text=f"Maximum {MAX_TIMING_ENTRIES} Timings", bg='#95a5a6')
             else:
@@ -1232,6 +1272,24 @@ class BLEDataAcquisitionGUI:
                 create_timing_entry_row(scrollable_frame)
                 canvas.configure(scrollregion=canvas.bbox("all"))
                 update_preview()
+
+
+        add_btn.config(command=add_timing_entry)
+
+        # Preview frame - TAILLE RÉDUITE pour compenser l'extension de la liste
+        preview_frame = tk.LabelFrame(main_frame, text="Configuration Preview", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        preview_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
+        
+        preview_label = tk.Label(preview_frame, text="No timing sequences configured", 
+                            font=('Courier', 9), bg='#ecf0f1', fg='#34495e',  # Police réduite
+                            justify=tk.LEFT, anchor="nw")
+        preview_label.pack(fill=tk.BOTH, padx=15, pady=10)
+
+        # Bouton Add Entry
+        add_btn_frame = tk.Frame(timing_entries_frame, bg='#ecf0f1')
+        add_btn_frame.pack(fill=tk.X, pady=12)
+        
 
         def update_preview():
             """Mise à jour aperçu avec calculs professionnels"""
@@ -1245,8 +1303,7 @@ class BLEDataAcquisitionGUI:
                         time_open = int(widget_set['time_open_ms'].get() or 0)
                         time_delay = int(widget_set['time_delay_ms'].get() or 0)
                         time_read = int(widget_set['time_read_ms'].get() or 0)
-                        led_pin = widget_set['pin'].get()  # CHANGÉ: de 'led_pin' à 'pin'
-                         
+                        led_pin = widget_set['pin'].get()
                         
                         cycle_time = time_open + time_delay + time_read + 10
                         total_time += cycle_time
@@ -1275,52 +1332,72 @@ class BLEDataAcquisitionGUI:
                 preview_label.config(text=f"⚠ Configuration Error: {e}")
                 print(f"Preview update error: {e}")
 
-        # Bouton Add Entry
-        add_btn_frame = tk.Frame(timing_entries_frame, bg='#ecf0f1')
-        add_btn_frame.pack(fill=tk.X, pady=12)
-        
-        add_btn = tk.Button(add_btn_frame, text=f"+ Add Timing Entry (0/{MAX_TIMING_ENTRIES})", 
-                        bg='#27ae60', fg='white', font=('Arial', 12, 'bold'), 
-                        command=add_timing_entry, width=35, height=1)
-        add_btn.pack(side=tk.LEFT, padx=15)
-        
-        # Preview frame
-        preview_frame = tk.LabelFrame(main_frame, text="Configuration Preview", 
-                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
-        preview_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
-        
-        preview_label = tk.Label(preview_frame, text="No timing sequences configured", 
-                            font=('Courier', 10), bg='#ecf0f1', fg='#34495e',
-                            justify=tk.LEFT, anchor="nw")
-        preview_label.pack(fill=tk.BOTH, padx=20, pady=15)
-
         def load_initial_config():
+            """Charger configuration initiale avec priorités"""
+            loaded_any = False
+
             """Charger configuration par défaut"""
-            default_entry = TimingEntry(
-                state=True,
-                time_open_ms=100,
-                time_delay_ms=50, 
-                time_read_ms=10,
-                brightness=100,
-                pin=1,
-                enabled=True,
-                index=1
-            )
-            create_timing_entry_row(scrollable_frame, default_entry)
+            if hasattr(self, 'last_applied_timing_config') and self.last_applied_timing_config:
+                self.on_message("Loading last applied timing configuration...")
+                for timing_entry in self.last_applied_timing_config:
+                    create_timing_entry_row(scrollable_frame, timing_entry)
+                    loaded_any = True
+            
+            # PRIORITÉ 2: Charger depuis les sensor_configs existants
+            elif any(config.timing_entries for config in self.sensor_configs.values()):
+                # Collecter toutes les entrées uniques
+                unique_entries = {}
+                for sensor_id, config in self.sensor_configs.items():
+                    if config.timing_entries:
+                        for timing_entry in config.timing_entries:
+                            entry_key = (timing_entry.pin, timing_entry.time_open_ms, 
+                                        timing_entry.time_delay_ms, timing_entry.time_read_ms, 
+                                        timing_entry.brightness, timing_entry.enabled)
+                            if entry_key not in unique_entries:
+                                unique_entries[entry_key] = timing_entry
+                
+                for timing_entry in unique_entries.values():
+                    create_timing_entry_row(scrollable_frame, timing_entry)
+                    loaded_any = True
+            
+            # PRIORITÉ 3: Configuration par défaut si rien n'existe
+            if not loaded_any:
+                self.on_message("Loading default timing configuration...")
+                default_entry = TimingEntry(
+                    state=True,
+                    time_open_ms=100,
+                    time_delay_ms=50, 
+                    time_read_ms=10,
+                    brightness=100,
+                    pin=1,
+                    enabled=True,
+                    index=1
+                )
+                create_timing_entry_row(scrollable_frame, default_entry)
+            
             canvas.configure(scrollregion=canvas.bbox("all"))
             update_preview()
             update_add_button_state()
 
         # SOLUTION PROFESSIONNELLE: Fonction apply_settings corrigée
+        def debug_widget_structure(widgets_dict, entry_index):
+            """Fonction de debug professionnelle pour identifier la structure des données"""
+            print(f"\n=== DEBUG WIDGET STRUCTURE - Entry {entry_index} ===")
+            print(f"Keys available: {list(widgets_dict.keys())}")
+            for key, value in widgets_dict.items():
+                try:
+                    if hasattr(value, 'get'):
+                        print(f"{key}: {value.get()}")
+                    else:
+                        print(f"{key}: {value}")
+                except Exception as e:
+                    print(f"{key}: ERROR - {e}")
+            print("=" * 50)
+
         def apply_settings():
             """FONCTION CORRIGÉE PROFESSIONNELLEMENT"""
             try:
                 print("\n=== DÉBUT DEBUG APPLY_SETTINGS ===")
-                
-                # Debug: Afficher tous les widgets
-                for i, widget_set in enumerate(timing_widgets):
-                    print(f"\nWidget Set {i}:")
-                    debug_widget_structure(widget_set, i)
                 
                 enabled_count = sum(1 for widget_set in timing_widgets if widget_set['enabled'].get())
                 
@@ -1329,23 +1406,22 @@ class BLEDataAcquisitionGUI:
                                         "Please enable at least one timing sequence")
                     return
                 
-                # Apply to sensor configurations
+                # NOUVEAU: Sauvegarder dans une structure globale pour persistence
+                saved_timing_entries = []
+                
+                # Apply to sensor configurations ET sauvegarder globalement
                 for channel_idx in range(4):
                     config = self.sensor_configs[channel_idx]
                     new_entries = []
                     
                     for i, widget_set in enumerate(timing_widgets):
                         try:
-                            # CORRECTION CRITIQUE: Utiliser les bonnes clés
                             enabled = widget_set['enabled'].get()
                             time_open = int(widget_set['time_open_ms'].get() or 100)
                             time_delay = int(widget_set['time_delay_ms'].get() or 50) 
                             time_read = int(widget_set['time_read_ms'].get() or 10)
-                            led_pin = int(widget_set['pin'].get())  # CHANGÉ: de 'led_pin' à 'pin'
+                            led_pin = int(widget_set['pin'].get())
                             brightness = int(widget_set['brightness'].get())
-                            
-                            print(f"Entry {i}: enabled={enabled}, led_pin={led_pin}, "
-                                f"times=({time_open},{time_delay},{time_read})")
                             
                             entry = TimingEntry(
                                 state=enabled,
@@ -1359,15 +1435,22 @@ class BLEDataAcquisitionGUI:
                             )
                             new_entries.append(entry)
                             
-                        except KeyError as e:
-                            print(f"KeyError in entry {i}: {e}")
-                            print(f"Available keys: {list(widget_set.keys())}")
-                            raise
+                            # NOUVEAU: Ajouter à la sauvegarde globale (éviter les doublons)
+                            entry_key = (led_pin, time_open, time_delay, time_read, brightness, enabled)
+                            if entry_key not in [
+                                (e.pin, e.time_open_ms, e.time_delay_ms, e.time_read_ms, e.brightness, e.enabled) 
+                                for e in saved_timing_entries
+                            ]:
+                                saved_timing_entries.append(entry)
+                            
                         except Exception as e:
                             print(f"Error entry {i}: {e}")
                             raise
                     
                     config.timing_entries = new_entries
+                
+                # NOUVEAU: Sauvegarder dans une variable de classe pour la persistence
+                self.last_applied_timing_config = saved_timing_entries
                 
                 self.update_timing_status_display()
                 
@@ -1421,6 +1504,371 @@ class BLEDataAcquisitionGUI:
         # Charger configuration initiale
         load_initial_config()
    
+    def open_calibration_panel(self):
+        """Open professional calibration panel for all sensors"""
+        cal_window = tk.Toplevel(self.root)
+        cal_window.title("Professional Calibration System")
+        cal_window.geometry("1400x900")
+        cal_window.configure(bg='#ecf0f1')
+        cal_window.transient(self.root)
+        cal_window.grab_set()
+        
+        # Center window
+        cal_window.update_idletasks()
+        x = (cal_window.winfo_screenwidth() // 2) - 700
+        y = (cal_window.winfo_screenheight() // 2) - 450
+        cal_window.geometry(f"1400x900+{x}+{y}")
+        
+        # Variables for calibration state
+        selected_sensor = tk.IntVar(value=0)
+        current_calibration_points = {i: [] for i in range(4)}
+        current_reading_var = tk.StringVar(value="0.00")
+        concentration_entry_var = tk.StringVar()
+        molecule_name_var = tk.StringVar()
+        unit_var = tk.StringVar()
+        calibration_status = tk.StringVar(value="Ready for calibration")
+        
+        # Header
+        header_frame = tk.Frame(cal_window, bg='#2c3e50', height=80)
+        header_frame.pack(fill=tk.X)
+        header_frame.pack_propagate(False)
+        
+        title_label = tk.Label(header_frame, text="Professional Calibration Panel", 
+                            font=('Arial', 24, 'bold'), fg='white', bg='#2c3e50')
+        title_label.pack(pady=20)
+        
+        # Main container
+        main_container = tk.Frame(cal_window, bg='#ecf0f1')
+        main_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Left panel - Sensor selection and configuration
+        left_panel = tk.LabelFrame(main_container, text="Sensor Selection & Configuration", 
+                                font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        
+        # Sensor selection
+        sensor_frame = tk.LabelFrame(left_panel, text="Choose Sensor:", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        sensor_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        sensor_checkboxes = {}
+        sensor_status_labels = {}
+        
+        def on_sensor_select(sensor_id):
+            """Handle sensor selection and activate LED"""
+            selected_sensor.set(sensor_id)
+            
+            # Update LED activation (send command to nRF52840)
+            if self.ble_manager.is_connected:
+                self.activate_sensor_led(sensor_id)
+            
+            # Update molecule name and unit from existing config
+            config = self.sensor_configs.get(sensor_id)
+            if config:
+                molecule_name_var.set(config.molecule_name or f"Channel {sensor_id}")
+                unit_var.set(config.unit or "mV")
+            
+            calibration_status.set(f"Sensor {sensor_id} selected - LED activated")
+            update_current_reading()
+        
+        colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12']
+        for i in range(4):
+            sensor_row = tk.Frame(sensor_frame, bg='#ecf0f1')
+            sensor_row.pack(fill=tk.X, pady=5)
+            
+            checkbox = tk.Radiobutton(sensor_row, text=f"Sensor {i}", 
+                                    variable=selected_sensor, value=i,
+                                    command=lambda s=i: on_sensor_select(s),
+                                    font=('Arial', 11, 'bold'), bg='#ecf0f1',
+                                    activebackground='#ecf0f1', fg=colors[i])
+            checkbox.pack(side=tk.LEFT, padx=10)
+            
+            # Status indicator
+            status_label = tk.Label(sensor_row, text="Not calibrated", 
+                                font=('Arial', 10), bg='#ecf0f1', fg='#e74c3c')
+            status_label.pack(side=tk.RIGHT, padx=10)
+            
+            sensor_checkboxes[i] = checkbox
+            sensor_status_labels[i] = status_label
+        
+        # Molecule configuration
+        config_frame = tk.LabelFrame(left_panel, text="Molecule Configuration", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        config_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        tk.Label(config_frame, text="Molecule Name:", font=('Arial', 11), bg='#ecf0f1').pack(anchor=tk.W, padx=10, pady=5)
+        molecule_entry = tk.Entry(config_frame, textvariable=molecule_name_var, font=('Arial', 11))
+        molecule_entry.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(config_frame, text="Unit (Concentration):", font=('Arial', 11), bg='#ecf0f1').pack(anchor=tk.W, padx=10, pady=5)
+        unit_entry = tk.Entry(config_frame, textvariable=unit_var, font=('Arial', 11))
+        unit_entry.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Current reading display
+        reading_frame = tk.LabelFrame(left_panel, text="Current Reading", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        reading_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        current_reading_label = tk.Label(reading_frame, textvariable=current_reading_var, 
+                                    font=('Arial', 18, 'bold'), fg='#27ae60', bg='#ecf0f1')
+        current_reading_label.pack(pady=15)
+        
+        tk.Label(reading_frame, text="Raw Sensor Value", font=('Arial', 10), 
+                fg='#7f8c8d', bg='#ecf0f1').pack()
+        
+        # Middle panel - Calibration points
+        middle_panel = tk.LabelFrame(main_container, text="Calibration Points (6 solutions required)", 
+                                    font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        middle_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        # Concentration input
+        input_frame = tk.Frame(middle_panel, bg='#ecf0f1')
+        input_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        tk.Label(input_frame, text="Solution Concentration:", font=('Arial', 12, 'bold'), bg='#ecf0f1').pack(anchor=tk.W)
+        
+        concentration_input_frame = tk.Frame(input_frame, bg='#ecf0f1')
+        concentration_input_frame.pack(fill=tk.X, pady=10)
+        
+        concentration_entry = tk.Entry(concentration_input_frame, textvariable=concentration_entry_var, 
+                                    font=('Arial', 14), width=15)
+        concentration_entry.pack(side=tk.LEFT)
+        
+        def add_calibration_point():
+            """Add current reading as calibration point"""
+            try:
+                sensor_id = selected_sensor.get()
+                concentration = float(concentration_entry_var.get())
+                raw_reading = float(current_reading_var.get())
+                
+                current_calibration_points[sensor_id].append((concentration, raw_reading))
+                concentration_entry_var.set("")
+                
+                update_calibration_table()
+                calibration_status.set(f"Point {len(current_calibration_points[sensor_id])}/6 added for Sensor {sensor_id}")
+                
+            except ValueError:
+                messagebox.showerror("Error", "Please enter a valid concentration value")
+        
+        add_point_btn = tk.Button(concentration_input_frame, text="Add Point ✓", 
+                                bg='#27ae60', fg='white', font=('Arial', 12, 'bold'),
+                                command=add_calibration_point)
+        add_point_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Calibration points table
+        table_frame = tk.Frame(middle_panel, bg='#ecf0f1')
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        columns = ('Point', 'Concentration', 'Raw Value')
+        cal_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=10)
+        
+        for col in columns:
+            cal_tree.heading(col, text=col)
+            cal_tree.column(col, width=120, anchor=tk.CENTER)
+        
+        cal_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=cal_tree.yview)
+        cal_tree.configure(yscrollcommand=cal_scrollbar.set)
+        
+        cal_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        cal_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        def update_calibration_table():
+            """Update calibration points table"""
+            # Clear existing items
+            for item in cal_tree.get_children():
+                cal_tree.delete(item)
+            
+            # Add points for selected sensor
+            sensor_id = selected_sensor.get()
+            points = current_calibration_points[sensor_id]
+            
+            for i, (conc, raw) in enumerate(points, 1):
+                cal_tree.insert('', 'end', values=(f'Point {i}', f'{conc:.3f}', f'{raw:.2f}'))
+        
+        # Clear points button
+        clear_btn = tk.Button(middle_panel, text="Clear Points", bg='#e74c3c', fg='white',
+                            font=('Arial', 11, 'bold'), 
+                            command=lambda: clear_calibration_points())
+        clear_btn.pack(pady=10)
+        
+        def clear_calibration_points():
+            """Clear calibration points for selected sensor"""
+            sensor_id = selected_sensor.get()
+            current_calibration_points[sensor_id] = []
+            update_calibration_table()
+            calibration_status.set(f"Calibration points cleared for Sensor {sensor_id}")
+        
+        # Right panel - Results and functions
+        right_panel = tk.LabelFrame(main_container, text="Calibration Results", 
+                                font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        right_panel.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Function display
+        function_frame = tk.LabelFrame(right_panel, text="Calibration Function", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        function_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        function_text = scrolledtext.ScrolledText(function_frame, width=35, height=8, 
+                                                font=('Courier', 10), bg='#2c3e50', fg='#ecf0f1')
+        function_text.pack(padx=10, pady=10)
+        
+        # Calibrate button
+        calibrate_btn = tk.Button(right_panel, text="CALIBRATE SENSOR", 
+                                bg='#8e44ad', fg='white', font=('Arial', 14, 'bold'),
+                                command=lambda: perform_calibration())
+        calibrate_btn.pack(pady=20)
+        
+        # Status display
+        status_frame = tk.LabelFrame(right_panel, text="Status", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        status_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        status_label = tk.Label(status_frame, textvariable=calibration_status, 
+                            font=('Arial', 11), bg='#ecf0f1', fg='#2c3e50',
+                            wraplength=300, justify=tk.LEFT)
+        status_label.pack(padx=10, pady=10)
+        
+        def perform_calibration():
+            """Perform calibration calculation and save"""
+            try:
+                sensor_id = selected_sensor.get()
+                points = current_calibration_points[sensor_id]
+                
+                if len(points) < 2:
+                    messagebox.showwarning("Warning", "At least 2 calibration points required")
+                    return
+                
+                # Extract data for calibration
+                concentrations = [p[0] for p in points]
+                raw_values = [p[1] for p in points]
+                
+                # Perform polynomial fit (quadratic)
+                import numpy as np
+                coeffs = np.polyfit(raw_values, concentrations, min(len(points)-1, 2))
+                
+                # Calculate R-squared
+                y_pred = np.polyval(coeffs, raw_values)
+                ss_res = np.sum((concentrations - y_pred) ** 2)
+                ss_tot = np.sum((concentrations - np.mean(concentrations)) ** 2)
+                r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                
+                # Create function formula
+                if len(coeffs) == 3:
+                    formula = f"y = {coeffs[0]:.6f}x² + {coeffs[1]:.6f}x + {coeffs[2]:.6f}"
+                elif len(coeffs) == 2:
+                    formula = f"y = {coeffs[0]:.6f}x + {coeffs[1]:.6f}"
+                else:
+                    formula = f"y = {coeffs[0]:.6f}x"
+                
+                # Update sensor configuration
+                config = self.sensor_configs[sensor_id]
+                config.calibration_coeffs = tuple(coeffs)
+                config.calibration_points = points.copy()
+                config.is_calibrated = True
+                config.calibration_function_formula = formula
+                config.calibration_r_squared = r_squared
+                config.calibration_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                config.molecule_name = molecule_name_var.get()
+                config.unit = unit_var.get()
+                
+                # Display results
+                result_text = f"Calibration Completed!\n\n"
+                result_text += f"Sensor: {sensor_id}\n"
+                result_text += f"Molecule: {config.molecule_name}\n"
+                result_text += f"Unit: {config.unit}\n\n"
+                result_text += f"Function:\n{formula}\n\n"
+                result_text += f"R² = {r_squared:.4f}\n"
+                result_text += f"Points used: {len(points)}\n"
+                result_text += f"Date: {config.calibration_date}"
+                
+                function_text.delete(1.0, tk.END)
+                function_text.insert(tk.END, result_text)
+                
+                # Update status indicator
+                sensor_status_labels[sensor_id].config(text="Calibrated ✓", fg='#27ae60')
+                
+                calibration_status.set(f"Sensor {sensor_id} calibrated successfully!")
+                
+                self.on_message(f"Sensor {sensor_id} calibrated: {formula} (R²={r_squared:.4f})")
+                
+            except Exception as e:
+                messagebox.showerror("Calibration Error", f"Failed to calibrate sensor: {str(e)}")
+                calibration_status.set(f"Calibration failed: {str(e)}")
+        
+        def update_current_reading():
+            """Update current sensor reading"""
+            try:
+                sensor_id = selected_sensor.get()
+                data = self.ble_manager.data_channels[sensor_id]
+                if data:
+                    latest_reading = data[-1].mv if data else 0.0
+                    current_reading_var.set(f"{latest_reading:.2f}")
+            except Exception:
+                current_reading_var.set("0.00")
+            
+            # Schedule next update
+            cal_window.after(500, update_current_reading)
+        
+        # Load existing calibration data
+        def load_existing_calibrations():
+            """Load existing calibration configurations"""
+            for sensor_id, config in self.sensor_configs.items():
+                if config.is_calibrated:
+                    sensor_status_labels[sensor_id].config(text="Calibrated ✓", fg='#27ae60')
+                    if config.calibration_points:
+                        current_calibration_points[sensor_id] = config.calibration_points.copy()
+        
+        # Bottom panel - Navigation
+        bottom_panel = tk.Frame(cal_window, bg='#2c3e50', height=70)
+        bottom_panel.pack(fill=tk.X)
+        bottom_panel.pack_propagate(False)
+        
+        # Main menu and Exit buttons
+        tk.Button(bottom_panel, text="Main Menu", bg='#34495e', fg='white', 
+                font=('Arial', 14, 'bold'), width=15, height=1,
+                command=cal_window.destroy).pack(side=tk.LEFT, padx=50, pady=20)
+        
+        tk.Button(bottom_panel, text="Exit", bg='#e74c3c', fg='white', 
+                font=('Arial', 14, 'bold'), width=15, height=1,
+                command=cal_window.destroy).pack(side=tk.RIGHT, padx=50, pady=20)
+        
+        # Initialize
+        load_existing_calibrations()
+        on_sensor_select(0)  # Select first sensor by default
+        update_current_reading()  # Start reading updates
+
+    def activate_sensor_led(self, sensor_id):
+        """Activate LED for specific sensor during calibration"""
+        if not self.ble_manager.is_connected:
+            return
+        
+        # Create a temporary timing configuration for calibration mode
+        calibration_config = {
+            "sequences": [{
+                "led_pin": sensor_id + 1,  # LED pins are 1-indexed
+                "time_open_ms": 1000,  # Keep LED on longer for calibration
+                "time_delay_ms": 100,
+                "time_read_ms": 100,
+                "enabled": True,
+                "lpo": 100  # Full brightness
+            }]
+        }
+        
+        # Send calibration mode configuration
+        future = self.run_async(self.ble_manager.send_timing_config(calibration_config))
+        
+        def on_led_activate_complete(future):
+            try:
+                success = future.result()
+                if success:
+                    self.on_message(f"LED {sensor_id + 1} activated for calibration")
+                else:
+                    self.on_message(f"Failed to activate LED {sensor_id + 1}")
+            except Exception as e:
+                self.on_message(f"LED activation error: {e}")
+        
+        future.add_done_callback(on_led_activate_complete)    
+
     def export_data(self):
         """Export recorded data"""
         if not self.ble_manager.session_data:
