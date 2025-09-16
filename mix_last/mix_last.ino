@@ -299,7 +299,7 @@ void parseJsonBuffer(const String& buffer) {
   // Update system state
   if (doc.containsKey("state")) {
     mysistem.systemEnabled = doc["state"];
-    mysistem.sistemResetlendiMi=false;
+    if(!mysistem.systemEnabled)mysistem.sistemResetlendiMi=false;
   }
 
   // Update channel sequences
@@ -349,7 +349,6 @@ void handleChill(){
 // Timer interrupt handler
 extern "C" void TIMER1_IRQHandler(void) {
   if (NRF_TIMER1->EVENTS_COMPARE[0]) {
-    NRF_TIMER1->TASKS_STOP = 1;
     NRF_TIMER1->EVENTS_COMPARE[0] = 0;
     mysistem.timer1Expired = true;
   }
@@ -358,7 +357,6 @@ extern "C" void TIMER1_IRQHandler(void) {
 
 extern "C" void TIMER2_IRQHandler(void) {
   if (NRF_TIMER2->EVENTS_COMPARE[0]) {
-    NRF_TIMER2->TASKS_STOP = 1;
     NRF_TIMER2->EVENTS_COMPARE[0] = 0;
     mysistem.timer2Expired = true;
   }
@@ -378,6 +376,7 @@ void resetsystem(){
     mysistem.jsonCallback=false;
     Serial.println("[!] Sistem sıfırlandı ve şuan sistem kapalı, işlemleri başlatmak için sistemi açınız.");
     mysistem.sistemResetlendiMi=true;
+    sd_app_evt_wait();
   }
   
 }
