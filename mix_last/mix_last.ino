@@ -11,10 +11,6 @@ BLEBas blebas;
 
 sistem mysistem;
 
-  int brightness;
-  int raw;
-  char c;
-  String str="";
 void setup() {
   Serial.begin(9600);
   while (!Serial)
@@ -25,9 +21,11 @@ void setup() {
   Bluefruit.autoConnLed(true);
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
   Bluefruit.begin();
+  Bluefruit.setName("genc");//yayın ismi buradan değiştiriliyor.
   Bluefruit.setTxPower(4);
   Bluefruit.Periph.setConnectCallback(connect_callback);
   Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
+
 
   bledfu.begin();
   bledis.setManufacturer("Adafruit Industries");
@@ -87,21 +85,28 @@ void processCurrentChannel() {
     advanceToNextChannel();
     return;
   }
+  Serial.print("-> Kanal ");
+  Serial.print(mysistem.currentChannel);
+  Serial.print(" durumu: ");
 
   switch (current.state) {
     case CHANNEL_IDLE:
+      Serial.println("IDLE - Başlatılıyor");
       startChannelProcessing(current);
       break;
 
     case DELAY_COUNTING:
+      Serial.println("DELAY_COUNTING - Gecikme süreci");
       handleDelayCounting(current);
       break;
 
     case ADC_READING_PHASE:
+      Serial.println("ADC_READING_PHASE - ADC ölçüm süreci");
       handleAdcReading(current);
       break;
 
     case CYCLE_COMPLETE:
+      Serial.println("CYCLE_COMPLETE - Tamamlandı, sonraki kanal");
       completeChannelProcessing(current);
       break;
   }
@@ -120,11 +125,6 @@ void startChannelProcessing(ChannelData& channel) {
   NRF_TIMER2->CC[0] = mysistem.myAds.adc_delay[mysistem.currentChannel] * 1000;//delay controller
   NRF_TIMER2->TASKS_START = 1;
   mysistem.b = map(mysistem.myLeds.leds[mysistem.currentChannel].led_parlaklik_orani,0,100, 0, 255);
-  //
-  Serial.print("Channel: ");
-  Serial.print(mysistem.currentChannel);
-  Serial.print(" - PWM Value: ");
-  Serial.println(mysistem.b);
   analogWrite(mysistem.currentChannel + 4,mysistem.b);
 }
 
@@ -201,6 +201,8 @@ String makeJsonPayload(int values[4]) {
 }
 
 void sendJsonPayload(const String& payload) {
+  Serial.print(">> Gönderilen JSON: ");
+  Serial.println(payload);  // JSON verisini yazdır
   bleuart.write((uint8_t*)payload.c_str(), payload.length());
 }
 
@@ -302,13 +304,15 @@ void parseJsonBuffer(const String& buffer) {
       int readMs = obj["time_read_ms"] | 0;
       bool enabled = obj["enabled"] | false;
       int lpo=obj["lpo"] | 0;
-
-      Serial.println(lpo);
-
-
-
-
       pin--;
+      Serial.println("---------- Kanal Ayarları ----------");
+      Serial.print("Kanal: "); Serial.println(pin);
+      Serial.print("Açık kalma süresi (ms): "); Serial.println(openMs);
+      Serial.print("Gecikme süresi (ms): "); Serial.println(delayMs);
+      Serial.print("Okuma süresi (ms): "); Serial.println(readMs);
+      Serial.print("LED parlaklık oranı (%): "); Serial.println(lpo);
+      Serial.print("Aktif mi?: "); Serial.println(enabled ? "Evet" : "Hayır");
+      Serial.println("-----------------------------------");
       if (pin >= 0 && pin < 4) {
         mysistem.myLeds.leds[pin].kalansure = openMs;
         mysistem.myLeds.leds[pin].led_parlaklik_orani=lpo;
@@ -361,6 +365,7 @@ void resetsystem(){
   mysistem.timer2Expired=false;
   mysistem.rxBuffer="";
   mysistem.jsonCallback=false;
+  Serial.println("[!] Sistem sıfırlandı.");
 }
 void timer1_init() {
   NRF_TIMER1->TASKS_STOP = 1;
