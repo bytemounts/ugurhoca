@@ -8,8 +8,10 @@ enum ChannelState {
   CHANNEL_IDLE,
   DELAY_COUNTING,
   ADC_READING_PHASE,
-  CYCLE_COMPLETE
+  CYCLE_COMPLETE,
+  CALIBRATION
 };
+
 
 struct ChannelData {
   ChannelState state;
@@ -32,5 +34,6 @@ struct sistem {
   String rxBuffer="";
   bool jsonCallback=false;
 };
+
 
 #endif
