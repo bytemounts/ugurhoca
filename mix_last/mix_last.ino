@@ -85,10 +85,6 @@ void loop() {
 void processCurrentChannel() {
   ChannelData& current = mysistem.channels[mysistem.currentChannel];
 
-  if (!mysistem.myAds.read_state[mysistem.currentChannel]) {
-    advanceToNextChannel();
-    return;
-  }
   /*
   Serial.print("-> Kanal ");
   Serial.print(mysistem.currentChannel);
@@ -110,20 +106,23 @@ void processCurrentChannel() {
       handleAdcReading(current);
       break;
 
-    case CALIBRATION:
-      handleCalibrationProcess(current);
-      break;
-
     case CYCLE_COMPLETE:
       //Serial.println("CYCLE_COMPLETE - sonraki kanal için led bekleniyor");
       completeChannelProcessing(current);
       break;
-
+    
+    case CALIBRATION:
+      handleCalibrationProcess(current);
+      break;
     
   }
 }
 
 void startChannelProcessing(ChannelData& channel) {
+  if (!mysistem.myAds.read_state[mysistem.currentChannel]) {
+    advanceToNextChannel();
+    return;
+  }
   channel.state = DELAY_COUNTING;
   channel.processComplete = false;
   mysistem.timer1Expired=false;
@@ -193,7 +192,7 @@ void handleCalibrationProcess(ChannelData& channel){
 }
 
 void advanceToNextChannel() {
-  mysistem.currentChannel = (mysistem.currentChannel + 1) % 5;
+  mysistem.currentChannel = (mysistem.currentChannel + 1) % 4;
 }
 
 String makeJsonPayload(int values[4]) {
@@ -227,7 +226,7 @@ String makeJsonCalibration(){
 }
 void sendJsonPayload(const String& payload) {
   //Serial.print(">> Gönderilen JSON: ");
-  Serial.println(payload);  // JSON verisini yazdır
+  //Serial.println(payload);  // JSON verisini yazdır
   bleuart.write((uint8_t*)payload.c_str(), payload.length());
 }
 
@@ -291,10 +290,12 @@ void uart_rx_callback(uint16_t conn_handle) {
 
 void handleBleMessages() {
   if (mysistem.jsonCallback) {
-    mysistem.rxBuffer.trim();
-    parseJsonBuffer(mysistem.rxBuffer);
     mysistem.sistemResetlendiMi=false;
     resetsystemVar();
+    mysistem.rxBuffer.trim();
+    parseJsonBuffer(mysistem.rxBuffer);
+    mysistem.rxBuffer="";
+    
   }
 }
 
@@ -320,7 +321,10 @@ void parseJsonBuffer(const String& buffer) {
   if(doc.containsKey("clb")){//calibration
     bool state = doc["clb"];
     uint8_t index = doc["index"];
+    
+    mysistem.currentChannel=index;//BLE bağlantısı kopunca bu şekilde olduğunda ledi kapatır.
     if(state){
+
       mysistem.channels[index].state = CALIBRATION;
       analogWrite(index + 4,255);//parlaklık max kabul edilmiştir.
     }
@@ -401,7 +405,6 @@ void resetsystemVar(){
     mysistem.currentChannel=0;
     mysistem.timer1Expired=false;
     mysistem.timer2Expired=false;
-    mysistem.rxBuffer="";
     mysistem.jsonCallback=false;
     Serial.println("[!] Sistem sıfırlandı ve şuan sistem kapalı, işlemleri başlatmak için sistemi açınız.");
     mysistem.sistemResetlendiMi=true;
