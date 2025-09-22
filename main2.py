@@ -42,13 +42,13 @@ class SensorData:
 @dataclass
 class TimingEntry:
     """Enhanced timing entry for LED control sequence"""
-    state: bool = True  # LED state (ON/OFF)
+    state: bool = False  # LED state (ON/OFF)
     time_open_ms: int = 100  # LED on time in milliseconds
     time_delay_ms: int = 50  # Delay before measurement starts
     time_read_ms: int = 10   # ADC reading duration
-    brightness: int = 100
+    brightness: int = 40
     pin: int = 1  # LED pin number
-    enabled: bool = True  # Timing entry enabled/disabled
+    enabled: bool = False  # Timing entry enabled/disabled
     index: int = None  # Timing entry index
     
     @property
@@ -62,23 +62,6 @@ class TimingEntry:
         return 1000.0 / self.cycle_time_ms if self.cycle_time_ms > 0 else 0
 
 @dataclass
-class CalibrationData:
-    """Calibration data for each sensor"""
-    molecule_name: str = ""
-    unit: str = ""
-    concentrations: List[float] = None
-    raw_values: List[float] = None
-    calibrated: bool = False
-    calibration_function: str = ""
-    r_squared: float = 0.0
-    
-    def __post_init__(self):
-        if self.concentrations is None:
-            self.concentrations = []
-        if self.raw_values is None:
-            self.raw_values = []
-
-@dataclass
 class SensorConfig:
     """Configuration for each sensor"""
     sensor_id: int
@@ -86,18 +69,38 @@ class SensorConfig:
     detector_id: int
     molecule_name: str = ""
     unit: str = ""
-    
-    
+    calibration_coeffs: Optional[tuple] = None
+    calibration_points: List[tuple] = None
     timing_entries: List[TimingEntry] = None
     active_timing_index: int = 0
-    calibration_data: CalibrationData = None
+
+    # Calibration metadata
+    is_calibrated: bool = False
+    calibration_function_formula: str = ""
+    calibration_r_squared: float = 0.0
+    calibration_date: str = ""
 
     def __post_init__(self):
         if self.timing_entries is None:
             self.timing_entries = [TimingEntry(on_time_ms=100, off_time_ms=900, enabled=False, index=1)]
-        if self.calibration_data is None:
-            self.calibration_data = CalibrationData()
+        if self.calibration_points is None:
+            self.calibration_points = []
+
+    def apply_calibration(self, raw_value: float) -> float:
+        """Apply calibration function to convert raw value to real concentration"""
+        if not self.is_calibrated or not self.calibration_coeffs:
+            return raw_value
         
+        try:
+            # Polynomial calibration: y = a*x^2 + b*x + c
+            if len(self.calibration_coeffs) >= 2:
+                a, b = self.calibration_coeffs[:2]
+                c = self.calibration_coeffs[2] if len(self.calibration_coeffs) > 2 else 0
+                return a * raw_value * raw_value + b * raw_value + c
+            return raw_value
+        except Exception:
+            return raw_value
+
 class BLEDataManager:
     """Manages BLE communication and data handling - Optimized for real-time"""
     
@@ -111,7 +114,8 @@ class BLEDataManager:
         self.current_active_led = None  # Track currently active LED for isolation
         self.system_state = True 
         self.last_applied_timing_config = None
-        self.calibration_window = None
+        self.calibration_callback: Optional[Callable] = None
+
 
         # Initialize message sending variables (add this before setup_gui())
         self.message_entry = None
@@ -166,171 +170,114 @@ class BLEDataManager:
                 self._handle_json_message(parsed, receive_timestamp)
             except json.JSONDecodeError as e:
                 self._log_message(f"JSON decode error: {e}")
-                
-    def _handle_json_message(self, parsed, receive_timestamp):
-        """Process parsed JSON message with LED-specific data isolation and calibration support"""
     
-        # DEBUG: Log du format reçu
-        self._log_message(f"Raw data received: {parsed} (type: {type(parsed)})")
-        
-        # CORRECTION: Détecter le format de calibration [channel, rawValue]
-        if (isinstance(parsed, list) and len(parsed) == 2 and 
-            isinstance(parsed[0], int) and isinstance(parsed[1], (int, float))):
+    def _handle_json_message(self, parsed, receive_timestamp):
+        """Process parsed JSON message with LED-specific data isolation"""
+        if not isinstance(parsed, list):
+            self._log_message(f"Warning: Expected list, got {type(parsed)}")
+            return
             
-            # Format de calibration détecté: [channel, rawValue]
-            channel = parsed[0]
+        # NOUVEAU: Détecter le format calibration [channel, value]
+        if isinstance(parsed, list) and len(parsed) == 2 and all(isinstance(x, (int, float)) for x in parsed):
+            # Format calibration: [channel, raw_value]
+            channel = int(parsed[0])
             raw_value = int(parsed[1])
             
-            self._log_message(f"Calibration data received: Channel {channel} = {raw_value}")
-            
-            # Créer un SensorData pour le canal de calibration
+            # Créer un SensorData pour le mode calibration
             sensor_data = SensorData(
-                unit="ADC",
+                unit="mV",
                 timestamp=int(receive_timestamp * 1000),
-                mv=float(raw_value * 3.3 / 4095),
+                mv=float(raw_value),  # En mode calibration, utiliser raw_value comme mv
                 value=raw_value,
                 channel=channel,
                 received_time=receive_timestamp
             )
             
-            # CORRECTION: Vérifier limites du channel
+            # Traitement spécial pour la calibration
             with self.data_lock:
-                if 0 <= channel < 4:
-                    self.data_channels[channel].append(sensor_data)
-                    
-                    session_entry = {
-                        'timestamp': receive_timestamp,
-                        'datetime': datetime.now().isoformat(),
-                        'sensors': {
-                            channel: {
-                                'raw': raw_value,
-                                'real': sensor_data.mv,
-                                'calibration_mode': True
-                            }
-                        },
-                        'calibration_mode': True,
-                        'active_channel': channel
-                    }
-                    
-                    self.session_data.append(session_entry)
-                    
-                    if self.on_data_received:
-                        try:
-                            self.on_data_received(sensor_data)
-                        except Exception as e:
-                            self._log_message(f"Callback error: {e}")
-                else:
-                    self._log_message(f"Invalid channel: {channel}")
+                self.data_channels[channel].append(sensor_data)
             
-            return
-        
-        # CORRECTION: Détecter aussi le format avec un seul élément de données
-        elif (isinstance(parsed, list) and len(parsed) == 1 and 
-            isinstance(parsed[0], list) and len(parsed[0]) >= 4):
+            # Callbacks
+            if self.on_data_received:
+                self.on_data_received(sensor_data)
             
-            # Format calibration single sensor: [[unit, timestamp, mv, value]]
-            data = parsed[0]
-            
-            # PROBLÈME CRITIQUE: Comment déterminer le channel ici ?
-            # SOLUTION TEMPORAIRE: Utiliser un channel par défaut ou déduire
-            channel = 0  # Vous devez adapter selon votre protocole
-            
-            try:
-                sensor_data = SensorData(
-                    unit=str(data[0]),
-                    timestamp=int(data[1]),
-                    mv=float(data[2]),
-                    value=int(data[3]),
-                    channel=channel,
-                    received_time=receive_timestamp
-                )
+            if self.calibration_callback:
+                self.calibration_callback(sensor_data)
                 
-                with self.data_lock:
-                    self.data_channels[channel].append(sensor_data)
-                    
-                    session_entry = {
-                        'timestamp': receive_timestamp,
-                        'datetime': datetime.now().isoformat(),
-                        'sensors': {
-                            channel: {
-                                'raw': sensor_data.value,
-                                'real': sensor_data.mv,
-                                'calibration_mode': True
-                            }
-                        },
-                        'calibration_mode': True,
-                        'active_channel': channel
-                    }
-                    
-                    self.session_data.append(session_entry)
-                    
-                    if self.on_data_received:
-                        try:
-                            self.on_data_received(sensor_data)
-                        except Exception as e:
-                            self._log_message(f"Callback error: {e}")
-            
-            except (IndexError, ValueError, TypeError) as e:
-                self._log_message(f"Error parsing single sensor data: {e}")
-                return
-            
             return
         
-        # FORMAT NORMAL: 4 canaux (reste identique)
-        if not isinstance(parsed, list):
-            self._log_message(f"Warning: Expected list, got {type(parsed)}")
-            return
-
+        if len(parsed) != 4:
+            self._log_message(f"Warning: Expected 4 channels, got {len(parsed)}")
+        
+        # Performance tracking
         self.data_receive_count += 1
         
+        # Check if this is LED-isolated data
+        led_isolation_enabled = hasattr(self, 'led_isolation_mode') and self.led_isolation_mode
+        current_active_led = getattr(self, 'current_active_led', None)
+        
+        # Session data entry with LED isolation support
         session_entry = {
             'timestamp': receive_timestamp,
             'datetime': datetime.now().isoformat(),
             'sensors': {},
-            'calibration_mode': False
+            'active_led': current_active_led,  # Track which LED was active
+            'isolation_mode': led_isolation_enabled
         }
         
-        # CORRECTION: Gérer différentes longueurs de données
+        # Process each channel with LED-specific filtering
         with self.data_lock:
-            try:
-                if len(parsed) == 4:
-                    # Format normal 4 canaux
-                    for channel, data in enumerate(parsed):
-                        if isinstance(data, list) and len(data) >= 4:
-                            sensor_data = SensorData(
-                                unit=str(data[0]),
-                                timestamp=int(data[1]),
-                                mv=float(data[2]),
-                                value=int(data[3]),
-                                channel=channel,
-                                received_time=receive_timestamp
-                            )
-                            
-                            self.data_channels[channel].append(sensor_data)
-                            
-                            session_entry['sensors'][channel] = {
-                                'raw': sensor_data.value,
-                                'real': sensor_data.mv,
-                                'calibration_mode': False
-                            }
-                            
-                            if self.on_data_received:
-                                try:
-                                    self.on_data_received(sensor_data)
-                                except Exception as e:
-                                    self._log_message(f"Callback error channel {channel}: {e}")
-                else:
-                    self._log_message(f"Unexpected data format: {len(parsed)} elements - {parsed}")
-                    return
-            
-            except Exception as e:
-                self._log_message(f"Error processing data: {e}")
-                return
+            for channel, data in enumerate(parsed[:4]):
+                if isinstance(data, list) and len(data) >= 4:
+                    
+                    # LED isolation logic - only process data if from correct LED
+                    # if led_isolation_enabled and current_active_led is not None:
+                    #     # Only process data if it matches the currently active LED
+                    #     expected_led_pin = current_active_led
+                    #     sensor_config = getattr(self, 'sensor_configs', {}).get(channel)
+                        
+                    #     if sensor_config:
+                    #         # Check if this channel's timing entries match the active LED
+                    #         channel_led_pins = [t.pin for t in sensor_config.timing_entries if t.enabled]
+                    #         if expected_led_pin not in channel_led_pins:
+                    #             continue  # Skip data from non-active LEDs
+                    
+                    sensor_data = SensorData(
+                        unit=data[0],
+                        timestamp=data[1],
+                        mv=float(data[2]),
+                        value=int(data[3]),
+                        channel=channel,
+                        received_time=receive_timestamp
+                    )
+                    
+                    # # Add LED isolation metadata
+                    # if led_isolation_enabled:
+                    #     sensor_data.source_led = current_active_led
+                    #     sensor_data.isolated = True
+                    
+                    self.data_channels[channel].append(sensor_data)
+                    
+                    # Add to session data
+                    session_entry['sensors'][channel] = {
+                        'raw': sensor_data.value,
+                        'real': sensor_data.mv,
+                        'source_led': getattr(sensor_data, 'source_led', None),
+                        'isolated': getattr(sensor_data, 'isolated', False)
+                    }
+                    
+                    # Immediate callback for real-time update
+                    if self.on_data_received:
+                        self.on_data_received(sensor_data)
 
+                    if self.calibration_callback:
+                        self.calibration_callback(sensor_data)
+        
+        # Store session data only if there's actual sensor data
         if session_entry['sensors']:
             self.session_data.append(session_entry)
             self.last_data_time = receive_timestamp
-
+    
     def get_channel_data(self, channel):
         """Thread-safe data access"""
         with self.data_lock:
@@ -477,40 +424,6 @@ class BLEDataManager:
             logger.error(f"Failed to send enhanced timing config: {e}")
             return False
 
-    async def send_calibration_config(self, sensor_index, state):
-        """Send calibration configuration to nRF52840"""
-        if not self.client or not self.is_connected:
-            raise Exception("Device not connected")
-        
-        try:
-            calibration_data = {
-                "state": state,
-                "clb": True,
-                "index": sensor_index  # Index commence à 1
-            }
-            
-            config_json = json.dumps(calibration_data, separators=(',', ':'))
-            config_message = config_json + '\n'
-            config_bytes = config_message.encode('utf-8')
-            
-            # Send in chunks
-            max_chunk_size = 20
-            for i in range(0, len(config_bytes), max_chunk_size):
-                chunk = config_bytes[i:i + max_chunk_size]
-                await self.client.write_gatt_char(NUS_RX, chunk)
-                await asyncio.sleep(0.02)
-
-            # End marker
-            await self.client.write_gatt_char(NUS_RX, b'\n')
-            await asyncio.sleep(0.05)
-            
-            self._log_message(f"Calibration config sent: Sensor {sensor_index+1} {'ON' if state else 'OFF'}")
-            return True
-            
-        except Exception as e:
-            self._log_message(f"Failed to send calibration config: {e}")
-            return False
-
     async def disconnect(self):
         """Disconnect from BLE device"""
         try:
@@ -592,6 +505,40 @@ class BLEDataManager:
             
         except Exception as e:
             self._log_message(f"Failed to send state: {e}")
+            return False
+
+    async def send_calibration_config(self, config_data):
+        """Send calibration configuration to nRF52840"""
+        if not self.client or not self.is_connected:
+            raise Exception("Device not connected")
+        
+        try:
+            # Format the calibration configuration as JSON
+            config_json = json.dumps(config_data, separators=(',', ':'))
+            config_message = config_json + '\n'
+            config_bytes = config_message.encode('utf-8')
+
+            # Send in chunks if needed
+            max_chunk_size = 20
+            total_chunks = (len(config_bytes) + max_chunk_size - 1) // max_chunk_size
+            
+            self._log_message(f"Sending calibration config: {total_chunks} chunks, {len(config_bytes)} bytes")
+            
+            for i in range(0, len(config_bytes), max_chunk_size):
+                chunk = config_bytes[i:i + max_chunk_size]
+                await self.client.write_gatt_char(NUS_RX, chunk)
+                await asyncio.sleep(0.05)
+            
+            # Send end marker
+            newline_bytes = b'\n'
+            await self.client.write_gatt_char(NUS_RX, newline_bytes)
+            await asyncio.sleep(0.1)
+            
+            self._log_message("Calibration configuration sent successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send calibration config: {e}")
             return False
 
     def clear_data(self):
@@ -782,8 +729,8 @@ class BLEDataAcquisitionGUI:
                                    command=self.open_timing_config, **button_style)
         self.timing_btn.pack(side=tk.LEFT, padx=5)
         
-        #Calibration controls
-        self.calibration_btn = tk.Button(control_frame, text="CALIBRATION", bg="#8e44ad", fg='white',
+        # Calibration controls
+        self.calibration_btn = tk.Button(control_frame, text="CALIBRATION", bg='#16a085', fg='white',
                                    command=self.open_calibration_panel, **button_style)
         self.calibration_btn.pack(side=tk.LEFT, padx=5)
 
@@ -958,10 +905,10 @@ class BLEDataAcquisitionGUI:
         # Add scrollbar
         stats_scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self.stats_tree.yview)
         self.stats_tree.configure(yscrollcommand=stats_scrollbar.set)
-        
+
         self.stats_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         stats_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         # Initialize rows
         for i in range(4):
             self.stats_tree.insert('', 'end', iid=f'ch{i}', 
@@ -1044,499 +991,7 @@ class BLEDataAcquisitionGUI:
             fg='#7f8c8d'
         )
         self.send_status_label.pack(anchor=tk.W)
-       
-    def open_calibration_panel(self):
-        """Ouvre le panneau de calibration professionnel - VERSION CORRIGÉE ENTRY WIDGETS"""
-        calibration_window = tk.Toplevel(self.root)
-        calibration_window.title("Calibration Panel - Professional Sensor Calibration")
-        calibration_window.geometry("1600x1000")
-        calibration_window.configure(bg='#2c3e50')
-        calibration_window.transient(self.root)
-        calibration_window.grab_set()
-        
-        # Center window avec nouvelles dimensions
-        calibration_window.update_idletasks()
-        x = (calibration_window.winfo_screenwidth() // 2) - 700
-        y = (calibration_window.winfo_screenheight() // 2) - 450
-        calibration_window.geometry(f"1600x1000+{x}+{y}")
-
-        # Variables d'état
-        selected_sensor = tk.IntVar(value=0)
-        calibration_readings = {0: [], 1: [], 2: [], 3: []}
-        current_reading_display = {}
-        
-        # Header
-        header_frame = tk.Frame(calibration_window, bg='#34495e', height=80)
-        header_frame.pack(fill=tk.X, padx=15, pady=15)
-        header_frame.pack_propagate(False)
-        
-        title_label = tk.Label(header_frame, text="Calibration Panel", 
-                            font=('Arial', 28, 'bold'), fg='white', bg='#34495e')
-        title_label.pack(pady=20)
-        
-        # Main content frame
-        main_frame = tk.Frame(calibration_window, bg='#ecf0f1')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
-        
-        # Left side - LARGEUR AUGMENTÉE
-        left_frame = tk.Frame(main_frame, bg='#ecf0f1', width=1200)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 15))
-        left_frame.pack_propagate(False)
-        
-        # Choose sensor section
-        choose_frame = tk.LabelFrame(left_frame, text="Choose:", font=('Arial', 16, 'bold'), 
-                                bg='#ecf0f1', fg='#2c3e50')
-        choose_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        # Sensor selection checkboxes and calibrate buttons
-        sensor_frames = {}
-        calibrate_buttons = {}
-        
-        for i in range(4):
-            sensor_frame = tk.Frame(choose_frame, bg='#ecf0f1', relief=tk.RAISED, bd=1)
-            sensor_frame.pack(fill=tk.X, pady=5, padx=5)
-            
-            # Checkbox et label sensor
-            sensor_var = tk.BooleanVar(name=f"sensor_{i}")
-
-            def create_callback(sensor_id, var):
-                return lambda *args: self.on_sensor_selected(sensor_id, var)
-            
-            callback = create_callback(i, sensor_var)
-
-            sensor_check = tk.Checkbutton(sensor_frame, variable=sensor_var, bg='#ecf0f1',
-                                        command=callback)
-            sensor_check.pack(side=tk.LEFT, padx=5, pady=10)
-            
-            sensor_label = tk.Label(sensor_frame, text=f"Sensor {i+1}", font=('Arial', 14, 'bold'),
-                                bg='#ecf0f1', fg='#2c3e50')
-            sensor_label.pack(side=tk.LEFT, padx=5, pady=10)
-            
-            # Configuration fields frame
-            config_inner_frame = tk.Frame(sensor_frame, bg='#ffffff', relief=tk.SUNKEN, bd=1)
-            config_inner_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            # SOLUTION: Utiliser un grid layout avec des colonnes bien définies
-            # Header row
-            header_row = tk.Frame(config_inner_frame, bg='#ffffff')
-            header_row.pack(fill=tk.X, pady=2)
-            
-            # Configuration du grid avec poids des colonnes
-            header_row.grid_columnconfigure(0, weight=2, minsize=100)  # Name
-            header_row.grid_columnconfigure(1, weight=1, minsize=60)   # Unit
-            for col in range(2, 8):  # Raw-1 to Conc-3
-                header_row.grid_columnconfigure(col, weight=1, minsize=70)
-            header_row.grid_columnconfigure(8, weight=3, minsize=150)  # Function formula
-            
-            # Headers avec grid
-            headers = ["Name", "Unit", "Raw-1", "Conc-1", "Raw-2", "Conc-2", "Raw-3", "Conc-3", "Function formula"]
-            for col, header_text in enumerate(headers):
-                tk.Label(header_row, text=header_text, font=('Arial', 11, 'bold'),
-                        bg='#ffffff', fg='#2c3e50').grid(row=0, column=col, padx=2, pady=2, sticky='ew')
-            
-            # Data entry row avec grid
-            entry_row = tk.Frame(config_inner_frame, bg='#ffffff')
-            entry_row.pack(fill=tk.X, pady=2)
-            
-            # Configuration du grid pour entry_row (même que header_row)
-            entry_row.grid_columnconfigure(0, weight=2, minsize=100)  # Name
-            entry_row.grid_columnconfigure(1, weight=1, minsize=60)   # Unit
-            for col in range(2, 8):  # Raw-1 to Conc-3
-                entry_row.grid_columnconfigure(col, weight=1, minsize=70)
-            entry_row.grid_columnconfigure(8, weight=3, minsize=150)  # Function formula
-            
-            # Name entry
-            name_entry = tk.Entry(entry_row, font=('Arial', 10), bg='white')
-            name_entry.grid(row=0, column=0, padx=2, pady=2, sticky='ew')
-            
-            # Unit entry
-            unit_entry = tk.Entry(entry_row, font=('Arial', 10), bg='white')
-            unit_entry.grid(row=0, column=1, padx=2, pady=2, sticky='ew')
-            
-            # Raw et Concentration entries
-            raw_entries = []
-            conc_entries = []
-            
-            for j in range(3):  # 3 paires Raw/Conc
-                # Raw entry (readonly)
-                raw_entry = tk.Entry(entry_row, font=('Arial', 10), 
-                                state='readonly', bg='#f0f0f0')
-                raw_entry.grid(row=0, column=2+j*2, padx=2, pady=2, sticky='ew')
-                raw_entries.append(raw_entry)
-                
-                # Concentration entry
-                conc_entry = tk.Entry(entry_row, font=('Arial', 10), bg='white')
-                conc_entry.grid(row=0, column=3+j*2, padx=2, pady=2, sticky='ew')
-                conc_entries.append(conc_entry)
-            
-            # Function formula entry
-            formula_entry = tk.Entry(entry_row, font=('Arial', 10), 
-                                state='readonly', bg='#f0f0f0')
-            formula_entry.grid(row=0, column=8, padx=2, pady=2, sticky='ew')
-            
-            # OK buttons row avec alignement parfait
-            ok_row = tk.Frame(config_inner_frame, bg='#ffffff')
-            ok_row.pack(fill=tk.X, pady=2)
-            
-            # Configuration du grid pour ok_row (même que les autres)
-            ok_row.grid_columnconfigure(0, weight=2, minsize=100)  # Name space
-            ok_row.grid_columnconfigure(1, weight=1, minsize=60)   # Unit space
-            for col in range(2, 8):  # Raw-1 to Conc-3
-                ok_row.grid_columnconfigure(col, weight=1, minsize=70)
-            ok_row.grid_columnconfigure(8, weight=3, minsize=150)  # Function space
-            
-            # Espaces vides pour aligner
-            tk.Label(ok_row, text="", bg='#ffffff').grid(row=0, column=0, padx=2)  # Name space
-            tk.Label(ok_row, text="", bg='#ffffff').grid(row=0, column=1, padx=2)  # Unit space
-            
-            # OK buttons alignés sous les colonnes Conc
-            for j in range(3):
-                # Espace pour Raw column
-                tk.Label(ok_row, text="", bg='#ffffff').grid(row=0, column=2+j*2, padx=2)
-                
-                # OK button pour Concentration column
-                ok_btn = tk.Button(ok_row, text="ok", font=('Arial', 9), bg='#3498db', fg='white',
-                                width=6, command=lambda s=i, idx=j: self.capture_calibration_reading(s, idx))
-                ok_btn.grid(row=0, column=3+j*2, padx=2, pady=2)
-            
-            # Espace final pour Function formula column
-            tk.Label(ok_row, text="", bg='#ffffff').grid(row=0, column=8, padx=2)
-            
-            # Calibrate button (position inchangée)
-            calibrate_btn = tk.Button(sensor_frame, text="Calibrate", font=('Arial', 12, 'bold'),
-                                    bg='#27ae60', fg='white', width=12,
-                                    command=lambda s=i: self.calibrate_sensor(s))
-            calibrate_btn.pack(side=tk.RIGHT, padx=10, pady=10)
-            
-            # Store references
-            sensor_frames[i] = {
-                'frame': sensor_frame,
-                'checkbox_var': sensor_var,
-                'name_entry': name_entry,
-                'unit_entry': unit_entry,
-                'raw_entries': raw_entries,
-                'conc_entries': conc_entries,
-                'formula_entry': formula_entry,
-                'calibrate_btn': calibrate_btn
-            }
-            calibrate_buttons[i] = calibrate_btn
-        
-        # Right side - Largeur ajustée pour la nouvelle taille
-        right_frame = tk.Frame(main_frame, bg='#ecf0f1')
-        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        
-        # Current readings display
-        readings_frame = tk.LabelFrame(right_frame, text="Current Sensor Readings", 
-                                    font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
-        readings_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        # Display for each sensor's current reading
-        for i in range(4):
-            sensor_display_frame = tk.Frame(readings_frame, bg='#ffffff', relief=tk.RAISED, bd=2)
-            sensor_display_frame.pack(fill=tk.X, pady=5, padx=10)
-            
-            tk.Label(sensor_display_frame, text=f"Sensor {i+1}:", font=('Arial', 12, 'bold'),
-                    bg='#ffffff', fg='#2c3e50').pack(side=tk.LEFT, padx=10, pady=10)
-            
-            value_label = tk.Label(sensor_display_frame, text="0.00 mV (Raw: 0)", 
-                                font=('Arial', 12), bg='#ffffff', fg='#3498db')
-            value_label.pack(side=tk.LEFT, padx=20, pady=10)
-            
-            status_label = tk.Label(sensor_display_frame, text="LED OFF", 
-                                font=('Arial', 10), bg='#ffffff', fg='#e74c3c')
-            status_label.pack(side=tk.RIGHT, padx=10, pady=10)
-            
-            current_reading_display[i] = {
-                'value_label': value_label,
-                'status_label': status_label
-            }
-        
-        # Calibration results display
-        results_frame = tk.LabelFrame(right_frame, text="Calibration Results", 
-                                    font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
-        results_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-        
-        results_text = scrolledtext.ScrolledText(results_frame, height=20, width=70,
-                                            font=('Courier', 10), bg='#2c3e50', fg='#ecf0f1')
-        results_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Bottom buttons
-        bottom_frame = tk.Frame(calibration_window, bg='#2c3e50', height=70)
-        bottom_frame.pack(fill=tk.X, padx=15, pady=(0, 15))
-        bottom_frame.pack_propagate(False)
-        
-        # Main menu et Exit buttons
-        main_menu_btn = tk.Button(bottom_frame, text="Main menu", font=('Arial', 14, 'bold'),
-                                bg='#3498db', fg='white', width=12,
-                                command=calibration_window.destroy)
-        main_menu_btn.pack(side=tk.LEFT, padx=50, pady=20)
-        
-        exit_btn = tk.Button(bottom_frame, text="Exit", font=('Arial', 14, 'bold'),
-                        bg='#e74c3c', fg='white', width=12,
-                        command=self.root.quit)
-        exit_btn.pack(side=tk.RIGHT, padx=50, pady=20)
-        
-        # Store references
-        calibration_window.sensor_frames = sensor_frames
-        calibration_window.calibration_readings = calibration_readings
-        calibration_window.current_reading_display = current_reading_display
-        calibration_window.results_text = results_text
-        
-        # Store reference to calibration window for access in other methods
-        self.calibration_window = calibration_window
     
-        self.root.after(500, lambda: self.update_calibration_readings_display(calibration_window))
-        
-
-        def on_calibration_close():
-            # Désactiver tous les LEDs de calibration avant fermeture
-            for sensor_id in range(4):
-                if hasattr(calibration_window, 'sensor_frames'):
-                    frames = calibration_window.sensor_frames.get(sensor_id)
-                    if frames and frames['checkbox_var'].get():
-                        self.send_calibration_config(sensor_id, False)
-            
-            # Nettoyer la référence
-            if hasattr(self, 'calibration_window'):
-                delattr(self, 'calibration_window')
-            
-            calibration_window.destroy()
-        
-        calibration_window.protocol("WM_DELETE_WINDOW", on_calibration_close)
-        
-    def on_sensor_selected(self, sensor_id, checkbox_var):
-        """Version simplifiée sans gestion complexe des traces"""
-        
-        # Empêcher les appels récursifs
-        if hasattr(self, '_updating_sensors') and self._updating_sensors:
-            return
-        
-        self._updating_sensors = True
-        
-        try:
-            if checkbox_var.get():
-                # Désactiver les autres sensors SANS modifier leurs traces
-                if hasattr(self, 'calibration_window') and hasattr(self.calibration_window, 'sensor_frames'):
-                    for i, frames in self.calibration_window.sensor_frames.items():
-                        if i != sensor_id and frames['checkbox_var'].get():
-                            frames['checkbox_var'].set(False)
-                            self.send_calibration_config(i, False)
-                    
-                # Activer le sensor sélectionné
-                self.send_calibration_config(sensor_id, True)
-                self.on_message(f"Sensor {sensor_id+1} selected - LED ON")
-            else:
-                # Désactiver le sensor
-                self.send_calibration_config(sensor_id, False)
-                self.on_message(f"Sensor {sensor_id+1} deselected - LED OFF")
-        
-        except Exception as e:
-            self.on_message(f"Error in sensor selection: {e}")
-            # Restaurer l'état en cas d'erreur
-            checkbox_var.set(False)
-        
-        finally:
-            self._updating_sensors = False
-   
-    def reattach_calibration_traces(self):
-        """Réattacher les traces des checkboxes après opérations async"""
-        if hasattr(self, 'calibration_window') and hasattr(self.calibration_window, 'sensor_frames'):
-            for i, frames in self.calibration_window.sensor_frames.items():
-                # Réattacher le trace
-                trace_id = frames['checkbox_var'].trace('w', lambda *args, s=i, v=frames['checkbox_var']: self.on_sensor_selected(s, v))
-                frames['trace_id'] = trace_id
-                
-    def activate_sensor_for_calibration(self, sensor_id):
-        """Activer le LED pour le sensor sélectionné"""
-        # Implémenter l'activation du LED via BLE
-        # Cette fonction devra envoyer une commande au nRF52840 pour activer le LED spécifique
-        pass
-
-    def deactivate_sensor_for_calibration(self, sensor_id):
-        """Désactiver le LED pour le sensor"""
-        # Implémenter la désactivation du LED via BLE
-        pass
-
-    def capture_calibration_reading(self, sensor_id, reading_index):
-        """Capturer une lecture de calibration"""
-        if hasattr(self, 'calibration_window'):
-            frames = self.calibration_window.sensor_frames[sensor_id]
-            conc_entry = frames['conc_entries'][reading_index]
-            raw_entry = frames['raw_entries'][reading_index]
-            
-            try:
-                concentration = float(conc_entry.get())
-                # Obtenir la valeur brute actuelle du sensor
-                current_raw = self.get_current_raw_value(sensor_id)
-                
-                # Mettre à jour l'affichage
-                raw_entry.config(state='normal')
-                raw_entry.delete(0, tk.END)
-                raw_entry.insert(0, str(current_raw))
-                raw_entry.config(state='readonly')
-                
-                # Sauvegarder la lecture
-                readings = self.calibration_window.calibration_readings[sensor_id]
-                if len(readings) <= reading_index:
-                    readings.extend([None] * (reading_index + 1 - len(readings)))
-                readings[reading_index] = (concentration, current_raw)
-                
-                self.on_message(f"Lecture {reading_index+1} capturée pour Sensor {sensor_id+1}: {concentration} -> {current_raw}")
-                
-            except ValueError:
-                messagebox.showwarning("Erreur", "Veuillez entrer une valeur de concentration valide")
-
-    def get_current_raw_value(self, sensor_id):
-        """Obtenir la valeur brute actuelle d'un sensor"""
-        data = self.ble_manager.get_channel_data(sensor_id)
-        if data:
-            return data[-1].value  # Dernière valeur
-        return 0
-
-    def calibrate_sensor(self, sensor_id):
-        """Effectuer la calibration pour un sensor"""
-        if not hasattr(self, 'calibration_window'):
-            return
-        
-        # NOUVEAU: Désactiver automatiquement le state au début de la calibration
-        self.ble_manager.system_state = False
-        self.state_btn.config(text="STATE OFF", bg='#e74c3c')
-        
-        # Envoyer le state OFF au nRF52840
-        def on_state_off_complete(future):
-            try:
-                success = future.result()
-                if success:
-                    self.on_message("✓ System state set to OFF for calibration")
-                else:
-                    self.on_message("✗ Failed to set system state to OFF")
-            except Exception as e:
-                self.on_message(f"✗ State OFF error: {e}")
-        
-        future = self.run_async(self.ble_manager.send_state_update(False))
-        future.add_done_callback(on_state_off_complete)
-            
-        readings = self.calibration_window.calibration_readings[sensor_id]
-        valid_readings = [(c, r) for c, r in readings if c is not None and r is not None]
-        
-        if len(valid_readings) < 2:
-            messagebox.showwarning("Calibration", "Au moins 2 points de calibration sont nécessaires")
-            return
-        
-        try:
-            # Effectuer la régression linéaire
-            import numpy as np
-            concentrations = np.array([c for c, r in valid_readings])
-            raw_values = np.array([r for c, r in valid_readings])
-            
-            # Calculer la régression linéaire
-            coeffs = np.polyfit(raw_values, concentrations, 1)
-            slope, intercept = coeffs
-            
-            # Calculer R²
-            y_pred = slope * raw_values + intercept
-            ss_res = np.sum((concentrations - y_pred) ** 2)
-            ss_tot = np.sum((concentrations - np.mean(concentrations)) ** 2)
-            r_squared = 1 - (ss_res / ss_tot)
-            
-            # Créer la formule
-            formula = f"y = {slope:.6f}x + {intercept:.6f}"
-            
-            # Mettre à jour l'affichage
-            frames = self.calibration_window.sensor_frames[sensor_id]
-            frames['formula_entry'].config(state='normal')
-            frames['formula_entry'].delete(0, tk.END)
-            frames['formula_entry'].insert(0, formula)
-            frames['formula_entry'].config(state='readonly')
-            
-            # Sauvegarder dans la configuration du sensor
-            molecule_name = frames['name_entry'].get() or f"Molecule_{sensor_id+1}"
-            unit = frames['unit_entry'].get() or "mg/L"
-            
-            calibration_data = CalibrationData(
-                molecule_name=molecule_name,
-                unit=unit,
-                concentrations=[c for c, r in valid_readings],
-                raw_values=[r for c, r in valid_readings],
-                calibrated=True,
-                calibration_function=formula,
-                r_squared=r_squared
-            )
-            
-            self.sensor_configs[sensor_id].calibration_data = calibration_data
-            self.sensor_configs[sensor_id].molecule_name = molecule_name
-            self.sensor_configs[sensor_id].unit = unit
-            
-            # Afficher les résultats
-            results_text = self.calibration_window.results_text
-            results_text.insert(tk.END, f"\n{'='*50}\n")
-            results_text.insert(tk.END, f"CALIBRATION SENSOR {sensor_id+1} - {molecule_name}\n")
-            results_text.insert(tk.END, f"{'='*50}\n")
-            results_text.insert(tk.END, f"Fonction: {formula}\n")
-            results_text.insert(tk.END, f"R² = {r_squared:.4f}\n")
-            results_text.insert(tk.END, f"Points utilisés: {len(valid_readings)}\n")
-            results_text.insert(tk.END, f"Unité: {unit}\n")
-            results_text.see(tk.END)
-            
-            messagebox.showinfo("Calibration Réussie", 
-                            f"Sensor {sensor_id+1} calibré avec succès!\n"
-                            f"R² = {r_squared:.4f}\n"
-                            f"Fonction: {formula}")
-            
-            self.on_message(f"Sensor {sensor_id+1} calibré: {formula} (R²={r_squared:.4f})")
-            
-        except Exception as e:
-            messagebox.showerror("Erreur de Calibration", f"Échec de la calibration: {str(e)}")
-
-    def update_calibration_readings_display(self, calibration_window):
-        """Mettre à jour l'affichage des lectures en temps réel"""
-        if not hasattr(calibration_window, 'winfo_exists'):
-            return
-            
-        try:
-            if not calibration_window.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        
-        if not hasattr(calibration_window, 'current_reading_display'):
-            return
-        
-        try:
-            for sensor_id in range(4):
-                data = self.ble_manager.get_channel_data(sensor_id)
-                display = calibration_window.current_reading_display[sensor_id]
-                
-                if data:
-                    latest = data[-1]
-                    calibrated_value, unit = self.apply_calibration_to_reading(sensor_id, latest.value)
-                    display['value_label'].config(
-                        text=f"{latest.mv:.2f} mV | {calibrated_value:.2f} {unit} (Raw: {latest.value})"
-                    )
-                    
-                    # Vérifier si ce capteur est sélectionné
-                    sensor_frames = getattr(calibration_window, 'sensor_frames', {})
-                    if sensor_id in sensor_frames:
-                        is_selected = sensor_frames[sensor_id]['checkbox_var'].get()
-                        if is_selected:
-                            display['status_label'].config(text="LED ON - SELECTED", fg='#27ae60')
-                        else:
-                            display['status_label'].config(text="LED OFF", fg='#e74c3c')
-                    else:
-                        display['status_label'].config(text="LED OFF", fg='#e74c3c')
-                else:
-                    display['value_label'].config(text="0.00 mV | 0.00 mV (Raw: 0)")
-                    display['status_label'].config(text="NO DATA", fg='#95a5a6')
-
-            # Programmer le prochain update
-            if hasattr(calibration_window, 'winfo_exists') and calibration_window.winfo_exists():
-                self.root.after(200, lambda: self.update_calibration_readings_display(calibration_window))
-                
-        except tk.TclError:
-            return
-        except Exception as e:
-            print(f"Error updating calibration display: {e}")
-
     def create_status_frame(self):
         """Create status bar"""
         status_frame = tk.Frame(self.left_frame, bg='#34495e', height=30)
@@ -1553,26 +1008,6 @@ class BLEDataAcquisitionGUI:
                                        font=('Arial', 10), fg='#e74c3c', bg='#34495e')
         self.connection_label.pack(side=tk.RIGHT, padx=10, pady=5)
     
-    def apply_calibration_to_reading(self, sensor_id, raw_value):
-        """Appliquer la calibration à une valeur brute"""
-        config = self.sensor_configs.get(sensor_id)
-        if config and config.calibration_data and config.calibration_data.calibrated:
-            try:
-                # Extraire les coefficients de la formule y = ax + b
-                formula = config.calibration_data.calibration_function
-                # Parser "y = 0.123456x + 7.890123"
-                parts = formula.split('x + ')
-                slope = float(parts[0].split('y = ')[1])
-                intercept = float(parts[1])
-                
-                # Appliquer la conversion
-                calibrated_value = slope * raw_value + intercept
-                return calibrated_value, config.calibration_data.unit
-            except:
-                pass
-        
-        return raw_value, "mV"  # Retourner la valeur brute si pas de calibration
-
     def start_event_loop(self):
         """Start asyncio event loop in separate thread"""
         def run_loop():
@@ -2137,6 +1572,393 @@ class BLEDataAcquisitionGUI:
         # Charger configuration initiale
         load_initial_config()
 
+    def open_calibration_panel(self):
+        """Open professional calibration panel for all sensors"""
+        cal_window = tk.Toplevel(self.root)
+        cal_window.title("Professional Calibration System")
+        cal_window.geometry("1400x900")
+        cal_window.configure(bg='#ecf0f1')
+        cal_window.transient(self.root)
+        cal_window.grab_set()
+        
+        # Center window
+        cal_window.update_idletasks()
+        x = (cal_window.winfo_screenwidth() // 2) - 700
+        y = (cal_window.winfo_screenheight() // 2) - 450
+        cal_window.geometry(f"1400x900+{x}+{y}")
+        
+        # Variables for calibration state
+        selected_sensor = tk.IntVar(value=0)
+        current_calibration_points = {i: [] for i in range(4)}
+        current_reading_var = tk.StringVar(value="0.00")
+
+        self._current_reading_var = current_reading_var
+        concentration_entry_var = tk.StringVar()
+        molecule_name_var = tk.StringVar()
+        unit_var = tk.StringVar()
+        calibration_status = tk.StringVar(value="Ready for calibration")
+        
+        # Header
+        header_frame = tk.Frame(cal_window, bg='#2c3e50', height=80)
+        header_frame.pack(fill=tk.X)
+        header_frame.pack_propagate(False)
+        
+        title_label = tk.Label(header_frame, text="Professional Calibration Panel", 
+                            font=('Arial', 24, 'bold'), fg='white', bg='#2c3e50')
+        title_label.pack(pady=20)
+        
+        # Main container
+        main_container = tk.Frame(cal_window, bg='#ecf0f1')
+        main_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Left panel - Sensor selection and configuration
+        left_panel = tk.LabelFrame(main_container, text="Sensor Selection & Configuration", 
+                                font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        
+        # Sensor selection
+        sensor_frame = tk.LabelFrame(left_panel, text="Choose Sensor:", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        sensor_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        sensor_checkboxes = {}
+        sensor_status_labels = {}
+        
+        def on_sensor_select(sensor_id):
+            """Handle sensor selection and activate calibration mode"""
+            selected_sensor.set(sensor_id)
+            
+            # Send calibration configuration to nRF52840
+            if self.ble_manager.is_connected:
+                self.activate_sensor_led(sensor_id)
+            
+            # Update molecule name and unit from existing config
+            config = self.sensor_configs.get(sensor_id)
+            if config:
+                molecule_name_var.set(config.molecule_name or f"Channel {sensor_id}")
+                unit_var.set(config.unit or "mV")
+            
+            calibration_status.set(f"Sensor {sensor_id} selected - Calibration mode activated")
+            update_current_reading()
+        
+        colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12']
+        for i in range(4):
+            sensor_row = tk.Frame(sensor_frame, bg='#ecf0f1')
+            sensor_row.pack(fill=tk.X, pady=5)
+            
+            checkbox = tk.Radiobutton(sensor_row, text=f"Sensor {i}", 
+                                    variable=selected_sensor, value=i,
+                                    command=lambda s=i: on_sensor_select(s),
+                                    font=('Arial', 11, 'bold'), bg='#ecf0f1',
+                                    activebackground='#ecf0f1', fg=colors[i])
+            checkbox.pack(side=tk.LEFT, padx=10)
+            
+            # Status indicator
+            status_label = tk.Label(sensor_row, text="Not calibrated", 
+                                font=('Arial', 10), bg='#ecf0f1', fg='#e74c3c')
+            status_label.pack(side=tk.RIGHT, padx=10)
+            
+            sensor_checkboxes[i] = checkbox
+            sensor_status_labels[i] = status_label
+        
+        # Molecule configuration
+        config_frame = tk.LabelFrame(left_panel, text="Molecule Configuration", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        config_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        tk.Label(config_frame, text="Molecule Name:", font=('Arial', 11), bg='#ecf0f1').pack(anchor=tk.W, padx=10, pady=5)
+        molecule_entry = tk.Entry(config_frame, textvariable=molecule_name_var, font=('Arial', 11))
+        molecule_entry.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(config_frame, text="Unit (Concentration):", font=('Arial', 11), bg='#ecf0f1').pack(anchor=tk.W, padx=10, pady=5)
+        unit_entry = tk.Entry(config_frame, textvariable=unit_var, font=('Arial', 11))
+        unit_entry.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Current reading display
+        reading_frame = tk.LabelFrame(left_panel, text="Current Reading", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        reading_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        current_reading_label = tk.Label(reading_frame, textvariable=current_reading_var, 
+                                    font=('Arial', 18, 'bold'), fg='#27ae60', bg='#ecf0f1')
+        current_reading_label.pack(pady=15)
+        
+        tk.Label(reading_frame, text="Raw Sensor Value", font=('Arial', 10), 
+                fg='#7f8c8d', bg='#ecf0f1').pack()
+        
+        # Middle panel - Calibration points
+        middle_panel = tk.LabelFrame(main_container, text="Calibration Points (6 solutions required)", 
+                                    font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        middle_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        # Concentration input
+        input_frame = tk.Frame(middle_panel, bg='#ecf0f1')
+        input_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        tk.Label(input_frame, text="Solution Concentration:", font=('Arial', 12, 'bold'), bg='#ecf0f1').pack(anchor=tk.W)
+        
+        concentration_input_frame = tk.Frame(input_frame, bg='#ecf0f1')
+        concentration_input_frame.pack(fill=tk.X, pady=10)
+        
+        concentration_entry = tk.Entry(concentration_input_frame, textvariable=concentration_entry_var, 
+                                    font=('Arial', 14), width=15)
+        concentration_entry.pack(side=tk.LEFT)
+        
+        def add_calibration_point():
+            """Add current reading as calibration point"""
+            try:
+                sensor_id = selected_sensor.get()
+                concentration = float(concentration_entry_var.get())
+                
+                # Utiliser la valeur actuelle affichée
+                raw_reading = float(current_reading_var.get())
+                
+                current_calibration_points[sensor_id].append((concentration, raw_reading))
+                concentration_entry_var.set("")
+                
+                update_calibration_table()
+                calibration_status.set(f"Point {len(current_calibration_points[sensor_id])}/6 added for Sensor {sensor_id}")
+                
+            except ValueError:
+                messagebox.showerror("Error", "Please enter a valid concentration value")
+        
+        add_point_btn = tk.Button(concentration_input_frame, text="Add Point ✓", 
+                                bg='#27ae60', fg='white', font=('Arial', 12, 'bold'),
+                                command=add_calibration_point)
+        add_point_btn.pack(side=tk.LEFT, padx=10)
+        
+        # Calibration points table
+        table_frame = tk.Frame(middle_panel, bg='#ecf0f1')
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        columns = ('Point', 'Concentration', 'Raw Value')
+        cal_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=10)
+        
+        for col in columns:
+            cal_tree.heading(col, text=col)
+            cal_tree.column(col, width=120, anchor=tk.CENTER)
+        
+        cal_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=cal_tree.yview)
+        cal_tree.configure(yscrollcommand=cal_scrollbar.set)
+        
+        cal_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        cal_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        def update_calibration_table():
+            """Update calibration points table"""
+            # Clear existing items
+            for item in cal_tree.get_children():
+                cal_tree.delete(item)
+            
+            # Add points for selected sensor
+            sensor_id = selected_sensor.get()
+            points = current_calibration_points[sensor_id]
+            
+            for i, (conc, raw) in enumerate(points, 1):
+                cal_tree.insert('', 'end', values=(f'Point {i}', f'{conc:.3f}', f'{raw:.2f}'))
+        
+        # Clear points button
+        clear_btn = tk.Button(middle_panel, text="Clear Points", bg='#e74c3c', fg='white',
+                            font=('Arial', 11, 'bold'), 
+                            command=lambda: clear_calibration_points())
+        clear_btn.pack(pady=10)
+        
+        def clear_calibration_points():
+            """Clear calibration points for selected sensor"""
+            sensor_id = selected_sensor.get()
+            current_calibration_points[sensor_id] = []
+            update_calibration_table()
+            calibration_status.set(f"Calibration points cleared for Sensor {sensor_id}")
+        
+        # Right panel - Results and functions
+        right_panel = tk.LabelFrame(main_container, text="Calibration Results", 
+                                font=('Arial', 14, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        right_panel.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Function display
+        function_frame = tk.LabelFrame(right_panel, text="Calibration Function", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        function_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        function_text = scrolledtext.ScrolledText(function_frame, width=35, height=8, 
+                                                font=('Courier', 10), bg='#2c3e50', fg='#ecf0f1')
+        function_text.pack(padx=10, pady=10)
+        
+        # Calibrate button
+        calibrate_btn = tk.Button(right_panel, text="CALIBRATE SENSOR", 
+                                bg='#8e44ad', fg='white', font=('Arial', 14, 'bold'),
+                                command=lambda: perform_calibration())
+        calibrate_btn.pack(pady=20)
+        
+        # Status display
+        status_frame = tk.LabelFrame(right_panel, text="Status", 
+                                    font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50')
+        status_frame.pack(fill=tk.X, padx=15, pady=15)
+        
+        status_label = tk.Label(status_frame, textvariable=calibration_status, 
+                            font=('Arial', 11), bg='#ecf0f1', fg='#2c3e50',
+                            wraplength=300, justify=tk.LEFT)
+        status_label.pack(padx=10, pady=10)
+        
+        def perform_calibration():
+            """Perform calibration calculation and save"""
+            try:
+                sensor_id = selected_sensor.get()
+                points = current_calibration_points[sensor_id]
+                
+                if len(points) < 2:
+                    messagebox.showwarning("Warning", "At least 2 calibration points required")
+                    return
+                
+                # Extract data for calibration
+                concentrations = [p[0] for p in points]
+                raw_values = [p[1] for p in points]
+                
+                # Perform polynomial fit (quadratic)
+                import numpy as np
+                coeffs = np.polyfit(raw_values, concentrations, min(len(points)-1, 2))
+                
+                # Calculate R-squared
+                y_pred = np.polyval(coeffs, raw_values)
+                ss_res = np.sum((concentrations - y_pred) ** 2)
+                ss_tot = np.sum((concentrations - np.mean(concentrations)) ** 2)
+                r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                
+                # Create function formula
+                if len(coeffs) == 3:
+                    formula = f"y = {coeffs[0]:.6f}x² + {coeffs[1]:.6f}x + {coeffs[2]:.6f}"
+                elif len(coeffs) == 2:
+                    formula = f"y = {coeffs[0]:.6f}x + {coeffs[1]:.6f}"
+                else:
+                    formula = f"y = {coeffs[0]:.6f}x"
+                
+                # Update sensor configuration
+                config = self.sensor_configs[sensor_id]
+                config.calibration_coeffs = tuple(coeffs)
+                config.calibration_points = points.copy()
+                config.is_calibrated = True
+                config.calibration_function_formula = formula
+                config.calibration_r_squared = r_squared
+                config.calibration_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                config.molecule_name = molecule_name_var.get()
+                config.unit = unit_var.get()
+                
+                # Display results
+                result_text = f"Calibration Completed!\n\n"
+                result_text += f"Sensor: {sensor_id}\n"
+                result_text += f"Molecule: {config.molecule_name}\n"
+                result_text += f"Unit: {config.unit}\n\n"
+                result_text += f"Function:\n{formula}\n\n"
+                result_text += f"R² = {r_squared:.4f}\n"
+                result_text += f"Points used: {len(points)}\n"
+                result_text += f"Date: {config.calibration_date}"
+                
+                function_text.delete(1.0, tk.END)
+                function_text.insert(tk.END, result_text)
+                
+                # Update status indicator
+                sensor_status_labels[sensor_id].config(text="Calibrated ✓", fg='#27ae60')
+                
+                calibration_status.set(f"Sensor {sensor_id} calibrated successfully!")
+                
+                self.on_message(f"Sensor {sensor_id} calibrated: {formula} (R²={r_squared:.4f})")
+                
+            except Exception as e:
+                messagebox.showerror("Calibration Error", f"Failed to calibrate sensor: {str(e)}")
+                calibration_status.set(f"Calibration failed: {str(e)}")
+        
+        def update_current_reading():
+            """Update current sensor reading"""
+            try:
+                sensor_id = selected_sensor.get()
+                data = self.ble_manager.data_channels[sensor_id]
+                if data:
+                    # Prendre la dernière donnée reçue
+                    latest_data = data[-1]
+                    current_reading_var.set(f"{latest_data.mv:.2f}")
+                else:
+                    current_reading_var.set("0.00")
+            except Exception as e:
+                current_reading_var.set("0.00")
+                print(f"Update reading error: {e}")  # Debug
+
+            
+            # Schedule next update plus fréquemment pour le mode calibration
+            cal_window.after(500, update_current_reading)  # Mise à jour toutes les 500ms
+        
+        def calibration_data_callback(sensor_data):
+            """Callback spécifique pour recevoir les données en mode calibration"""
+            if sensor_data.channel == selected_sensor.get():
+                # Mettre à jour l'affichage en temps réel dans le thread UI
+                cal_window.after(0, lambda: current_reading_var.set(f"{sensor_data.mv:.2f}"))
+        
+        # Load existing calibration data
+        def load_existing_calibrations():
+            """Load existing calibration configurations"""
+            for sensor_id, config in self.sensor_configs.items():
+                if config.is_calibrated:
+                    sensor_status_labels[sensor_id].config(text="Calibrated ✓", fg='#27ae60')
+                    if config.calibration_points:
+                        current_calibration_points[sensor_id] = config.calibration_points.copy()
+
+        
+        # Bottom panel - Navigation
+        bottom_panel = tk.Frame(cal_window, bg='#2c3e50', height=70)
+        bottom_panel.pack(fill=tk.X)
+        bottom_panel.pack_propagate(False)
+        
+        # Main menu and Exit buttons
+        tk.Button(bottom_panel, text="Main Menu", bg='#34495e', fg='white', 
+                font=('Arial', 14, 'bold'), width=15, height=1,
+                command=cal_window.destroy).pack(side=tk.LEFT, padx=50, pady=20)
+        
+        tk.Button(bottom_panel, text="Exit", bg='#e74c3c', fg='white', 
+                font=('Arial', 14, 'bold'), width=15, height=1,
+                command=cal_window.destroy).pack(side=tk.RIGHT, padx=50, pady=20)
+        
+        # Initialize
+        load_existing_calibrations()
+        on_sensor_select(0)  # Select first sensor by default
+        update_current_reading()  # Start reading updates
+
+    def activate_sensor_led(self, sensor_id):
+        """Send calibration configuration for specific sensor"""
+        if not self.ble_manager.is_connected:
+            return
+        
+        calibration_config = {
+            "state": True,
+            "clb": True,
+            "index": sensor_id
+        }
+
+        def calibration_data_callback(sensor_data):
+            """Callback spécifique pour recevoir les données en mode calibration"""
+            if sensor_data.channel == sensor_id:
+                # CORRECTION : Utiliser la référence correcte
+                if hasattr(self, '_current_reading_var'):
+                    self.root.after(0, lambda: self._current_reading_var.set(f"{sensor_data.mv:.2f}"))
+        
+        # Activer le callback de calibration
+        self.ble_manager.calibration_callback = calibration_data_callback
+        
+        # Send calibration mode configuration
+        future = self.run_async(self.ble_manager.send_calibration_config(calibration_config))
+        
+        def on_calibration_activate_complete(future):
+            try:
+                success = future.result()
+                if success:
+                    self.on_message(f"Calibration mode activated for sensor {sensor_id}")
+                else:
+                    self.on_message(f"Failed to activate calibration mode for sensor {sensor_id}")
+                    self.ble_manager.calibration_callback = None
+            except Exception as e:
+                self.on_message(f"Calibration activation error: {e}")
+                self.ble_manager.calibration_callback = None
+        
+        future.add_done_callback(on_calibration_activate_complete)
+
     def export_data(self):
         """Export recorded data"""
         if not self.ble_manager.session_data:
@@ -2270,6 +2092,20 @@ class BLEDataAcquisitionGUI:
         
         return self.lines.values()
     
+    def deactivate_calibration_mode(self):
+        """Désactiver le mode calibration"""
+        if self.ble_manager:
+            self.ble_manager.calibration_callback = None
+        
+        # Optionnel: envoyer un signal au nRF52840 pour arrêter le mode calibration
+        if self.ble_manager.is_connected:
+            stop_calibration_config = {
+                "state": True,
+                "clb": False,
+                "index": 0
+            }
+            self.run_async(self.ble_manager.send_calibration_config(stop_calibration_config))
+
     def toggle_state(self):
         """Toggle system state and send to device"""
         # inverse state locally
@@ -2332,57 +2168,20 @@ class BLEDataAcquisitionGUI:
     def on_data_received(self, sensor_data: SensorData):
         """Handle new sensor data"""
         # Update statistics in UI thread
-        # self.root.after(0, self.update_statistics, sensor_data)
-        # self.root.after(0, self.update_channel_display, sensor_data)
-
-        """Handle new sensor data with error protection"""
-        try:
-            # Update statistics in UI thread with error protection
-            self.root.after(0, lambda: self.safe_update_statistics(sensor_data))
-            self.root.after(0, lambda: self.safe_update_channel_display(sensor_data))
-        except Exception as e:
-            # Log mais ne pas faire planter l'interface
-            logger.error(f"Error in on_data_received: {e}")
-
-    def safe_update_statistics(self, sensor_data: SensorData):
-        """Safe statistics update with error handling"""
-        try:
-            self.update_statistics(sensor_data)
-        except Exception as e:
-            logger.error(f"Error updating statistics: {e}")
-
-    def safe_update_channel_display(self, sensor_data: SensorData):
-        """Safe channel display update with error handling"""
-        try:
-            self.update_channel_display(sensor_data)
-        except Exception as e:
-            logger.error(f"Error updating channel display: {e}")
-
-    def send_calibration_config(self, sensor_index, state):
-        """Wrapper to send calibration config via BLE manager"""
-        def on_send_complete(future):
-            try:
-                success = future.result()
-                if success:
-                    self.on_message(f"✓ Calibration config sent for Sensor {sensor_index+1}")
-                else:
-                    self.on_message(f"✗ Failed to send calibration config for Sensor {sensor_index+1}")
-            except Exception as e:
-                self.on_message(f"✗ Calibration config error: {e}")
-        
-        future = self.run_async(self.ble_manager.send_calibration_config(sensor_index, state))
-        future.add_done_callback(on_send_complete)
+        self.root.after(0, self.update_statistics, sensor_data)
+        self.root.after(0, self.update_channel_display, sensor_data)
 
     def update_channel_display(self, sensor_data: SensorData):
         """Update channel button display with current values"""
         channel = sensor_data.channel
         if channel in self.channel_buttons:
-            calibrated_value, unit = self.apply_calibration_to_reading(channel, sensor_data.value)
+            config = self.sensor_configs.get(channel)
+            unit = config.unit if config else "mV"
             
             self.channel_buttons[channel]['value_display'].config(
-            text=f"{calibrated_value:.2f} {unit}")
+                text=f"{sensor_data.mv:.2f} {unit}")
             self.channel_buttons[channel]['raw_display'].config(
-            text=f"{sensor_data.value}")
+                text=f"{sensor_data.value}")
     
     def update_statistics(self, sensor_data: SensorData):
         """Update statistics display"""
